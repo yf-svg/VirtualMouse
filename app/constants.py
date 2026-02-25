@@ -1,0 +1,15 @@
+from enum import Enum
+
+
+class AppState(str, Enum):
+    IDLE_LOCKED = "IDLE_LOCKED"
+    AUTHENTICATING = "AUTHENTICATING"
+    ACTIVE_GENERAL = "ACTIVE_GENERAL"
+    ACTIVE_PRESENTATION = "ACTIVE_PRESENTATION"
+    SLEEP = "SLEEP"
+    EXITING = "EXITING"
+
+
+class Mode(str, Enum):
+    GENERAL = "GENERAL"
+    PRESENTATION = "PRESENTATION"

@@ -1,0 +1,156 @@
+
+Virtual Gesture Mouse — Development Progress Checklist
+
+## Phase 0 — Environment & Toolchain Setup
+
+**Goal:** Deterministic, reproducible development environment
+
+* [ ] Python virtual environment created
+* [ ] Exact dependency versions installed (`requirements.txt`)
+* [ ] MediaPipe imports successfully (offline)
+* [ ] Project entrypoint (`run.py`) executes without errors
+* [ ] Initial application state prints as `IDLE_LOCKED`
+
+**Exit condition:**
+`python run.py` prints startup message with no runtime errors
+
+---
+
+## Phase 1 — Architecture & Application Skeleton
+
+**Goal:** Enforced modular architecture and lifecycle control
+
+* [ ] Final directory structure created and locked
+* [ ] All modules import-safe (no circular imports)
+* [ ] Central configuration and constants defined
+* [ ] Explicit state machine implemented
+* [ ] Runtime loop stub wired (no camera yet)
+* [ ] Graceful startup and shutdown hooks in place
+
+**Exit condition:**
+Application boots, initializes state machine, and exits cleanly
+
+---
+
+## Phase 2 — Core Hand Detection (MediaPipe)
+
+**Goal:** Reliable single-hand landmark detection across backgrounds
+
+* [ ] Camera abstraction implemented (OpenCV)
+* [ ] Background robustness preprocessing pipeline active
+* [ ] MediaPipe Hand Landmarker integrated
+* [ ] Single-hand constraint enforced
+* [ ] Stable landmark output structure defined
+* [ ] Graceful handling of “no hand” frames
+* [ ] Real-time FPS ≥ 25 on CPU
+
+**Exit condition:**
+Landmarks are visualized consistently with moving hand in live video
+
+---
+
+## Phase 3 — Feature Extraction & Temporal Stability
+
+**Goal:** Hand-invariant, user-agnostic gesture representation
+
+* [ ] Landmark normalization (scale & translation invariant)
+* [ ] Distance-based and angle-based features extracted
+* [ ] Fixed-length feature vector defined
+* [ ] Temporal smoothing / sliding window implemented
+* [ ] Gesture instability rejection (noise gating)
+
+**Exit condition:**
+Feature vectors are stable across different users & distances
+
+---
+
+## Phase 4 — Lightweight ML (Gesture + Auth)
+
+**Goal:** ML-first gesture recognition with deterministic safety
+
+* [ ] Gesture recording tool implemented
+* [ ] Dataset captured (10 gestures, ≥2 users, multiple backgrounds)
+* [ ] SVM training pipeline implemented
+* [ ] Model evaluated and exported via `joblib`
+* [ ] Runtime model loader implemented
+* [ ] ML prediction confidence thresholds applied
+* [ ] Rule-based fallback & validation enforced
+
+**Exit condition:**
+Gestures recognized correctly in live feed with stable predictions
+
+---
+
+## Phase 5 — Authentication Flow
+
+**Goal:** Secure, gesture-based activation lifecycle
+
+* [ ] Locked / idle state enforced on startup
+* [ ] Authentication gesture sequence defined
+* [ ] Auth logic separated from control logic
+* [ ] Timeout and retry limits implemented
+* [ ] Unauthorized gestures safely ignored
+* [ ] Transition to active mode only after successful auth
+
+**Exit condition:**
+System ignores all control gestures until authenticated
+
+---
+
+## Phase 6 — Mouse & Presentation Control
+
+**Goal:** Safe OS interaction with app-aware modes
+
+### General Mode
+
+* [ ] Precise cursor movement mapping
+* [ ] Click, drag, scroll gestures stabilized
+* [ ] Dead-zone and clutch gesture implemented
+* [ ] Accidental click prevention
+
+### Presentation Mode (App-Based)
+
+* [ ] Presentation apps detected (foreground/window watch)
+* [ ] Automatic switch to presentation mode when app opens
+* [ ] Automatic exit when app closes
+* [ ] Slide navigation gestures mapped
+* [ ] General mode resumes seamlessly
+
+### Exit & Sleep
+
+* [ ] Gesture-based exit implemented
+* [ ] Hotkey-based exit implemented
+* [ ] Sleep / idle without process termination
+
+**Exit condition:**
+Mouse feels natural and presentation control works only inside presentation apps
+
+---
+
+## Phase 7 — Polishing, Testing & Viva Readiness
+
+**Goal:** Demonstrable, defendable academic system
+
+* [ ] Two-user testing completed
+* [ ] Multiple lighting & background tests passed
+* [ ] False-positive rate acceptably low
+* [ ] FPS stable under continuous use
+* [ ] Overlay UI clean and informative
+* [ ] All modules documented
+* [ ] Known limitations listed
+* [ ] Demo script prepared
+
+**Exit condition:**
+System runs reliably for live demonstration without supervision
+
+---
+
+## Final Deliverable Checklist (Viva-Critical)
+
+* [ ] Modular architecture clearly justified
+* [ ] ML-first design explained and defended
+* [ ] Background robustness explicitly addressed
+* [ ] Offline operation guaranteed
+* [ ] Safety and usability considerations documented
+
+ 

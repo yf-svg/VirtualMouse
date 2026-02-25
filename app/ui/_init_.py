@@ -1,0 +1,1 @@
+"""Visual feedback overlay."""

@@ -1,0 +1,56 @@
+virtual-gesture-mouse/
+│
+├── requirements.txt
+├── README.md
+│
+├── config/
+│   ├── camera_config.py
+│   ├── gesture_config.py
+│   ├── mode_config.py
+│   ├── auth_config.py
+│   └── system_config.py
+│
+├── src/
+│   ├── main.py                  # entry point
+│   ├── app_runtime.py           # main loop + orchestration
+│
+│   ├── camera/
+│   │   └── webcam.py
+│
+│   ├── preprocessing/
+│   │   ├── background_blur.py
+│   │   └── smoothing.py
+│
+│   ├── detection/
+│   │   ├── hand_detector.py     # MediaPipe wrapper
+│   │   └── motion_filter.py     # temporal stability
+│
+│   ├── gestures/
+│   │   ├── finger_state.py      # low-level finger logic
+│   │   ├── mouse_gestures.py    # rule-based gestures
+│   │   └── gesture_engine.py    # single gesture API
+│
+│   ├── control/
+│   │   ├── backend.py           # abstract interface
+│   │   ├── pyautogui_backend.py
+│   │   └── virtual_mouse.py
+│
+│   ├── security/
+│   │   └── gesture_authenticator.py
+│
+│   ├── modes/
+│   │   ├── mode_switcher.py
+│   │   ├── normal_mode.py
+│   │   └── presentation_mode.py
+│
+│   ├── ml/                      # later (week 5–6)
+│   │   ├── feature_extractor.py
+│   │   ├── svm_classifier.py
+│   │   └── model_loader.py
+│
+│   └── ui/
+│       └── overlay.py
+│
+└── data/
+    └── models/
+        └── svm_gesture_model.pkl

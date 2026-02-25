@@ -1,0 +1,1 @@
+"""Perception layer: camera, preprocessing, hand tracking."""

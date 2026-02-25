@@ -1,0 +1,25 @@
+# Core
+numpy==1.26.4
+opencv-contrib-python==4.8.1.78
+mediapipe==0.10.9
+
+# Mouse & system control
+pyautogui==0.9.54
+pynput==1.8.1
+PyGetWindow==0.0.9
+
+# MediaPipe dependencies (pin for stability)
+protobuf==3.20.3
+absl-py==2.4.0
+flatbuffers==25.12.19
+
+# Image handling
+pillow==12.1.0
+
+# Utilities
+six==1.17.0
+
+# Machine learning (gesture-classification model)
+scikit-learn==1.3.2
+joblib==1.3.2
+
