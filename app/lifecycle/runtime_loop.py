@@ -7,64 +7,111 @@ from app.constants import AppState
 from app.perception.camera import Camera
 from app.perception.preprocessing import Preprocessor
 from app.perception.hand_tracker import HandTracker
+from app.perception.landmark_smoothing import LandmarkSmoother
 from app.ui.overlay import Overlay
 from app.utils.fps import FPSCounter
+from app.gestures.pinch import detect_pinch_type
+
+
+def _mirror_landmarks(landmarks):
+    """Mirror normalized landmarks for selfie-style display."""
+    lm2 = type(landmarks)()
+    lm2.CopyFrom(landmarks)
+    for p in lm2.landmark:
+        p.x = 1.0 - p.x
+    return lm2
 
 
 def run_loop(initial_state: AppState) -> None:
     cv2.setUseOptimized(True)
+    try:
+        cv2.setNumThreads(1)
+    except Exception:
+        pass
 
     cam = Camera(
         device_index=CONFIG.camera_index,
         width=CONFIG.cam_width,
         height=CONFIG.cam_height,
     )
-    pre = Preprocessor(enable=CONFIG.enable_preprocessing, blur=False)
+
+    # Preprocessing is applied ONLY on small detection frames
+    pre = Preprocessor(enable=CONFIG.enable_preprocessing)
+
     tracker = HandTracker(max_num_hands=1)
+
+    # One Euro Filter for drawing stability (do NOT use for gesture logic)
+    smoother = LandmarkSmoother(
+        min_cutoff=1.6,
+        beta=0.18,
+        d_cutoff=1.0,
+    )
+
     overlay = Overlay()
     fps_counter = FPSCounter(avg_window=30)
 
     window_name = f"{CONFIG.app_name} - Phase 1"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
+    detect_scale = CONFIG.detect_scale
+    stride = max(1, CONFIG.inference_stride)
+    frame_i = 0
+
+    last_hand = None
+
     cam.open()
     try:
         while True:
-            frame = cam.read()
+            frame_raw = cam.read()
 
-            # Mirror view (selfie-style) for cursor feel
-            if CONFIG.mirror_view:
-                frame = cv2.flip(frame, 1)
+            # Display frame (mirrored for cursor feel)
+            frame_disp = cv2.flip(frame_raw, 1) if CONFIG.mirror_view else frame_raw
 
-            processed = pre.apply(frame)
-
-            # Run detection on a smaller frame for speed
+            # Detection path (UNMIRRORED, SMALL)
             small = cv2.resize(
-                processed, (0, 0),
-                fx=0.33, fy=0.33,
-                interpolation=cv2.INTER_AREA
+                frame_raw,
+                (0, 0),
+                fx=detect_scale,
+                fy=detect_scale,
+                interpolation=cv2.INTER_AREA,
             )
 
-            hand = tracker.detect(small)
+            if CONFIG.enable_preprocessing:
+                small = pre.apply(small)
 
-            if hand:
-                # Draw landmarks on display frame (landmarks are normalized, OK)
-                tracker.draw(frame, hand)
+            # Inference stride
+            if (frame_i % stride) == 0:
+                last_hand = tracker.detect(small)
+            frame_i += 1
 
-                handed = hand.get("handedness", None)
+            # Drawing + pinch classification
+            if last_hand:
+                lm_raw = last_hand["landmarks"]
+                handed = last_hand.get("handedness", None)
 
-                # Mirror view swaps visual left/right, so invert label to match what you SEE
-                if CONFIG.mirror_view and handed in ("Left", "Right"):
-                    handed = "Right" if handed == "Left" else "Left"
+                # Gesture recognition on RAW landmarks (accurate, no lag)
+                pinch = detect_pinch_type(lm_raw)
 
-                extra = f"Hand: {handed or 'Unknown'}"
+                # Smooth ONLY for drawing (stable skeleton)
+                lm_smooth = smoother.apply(lm_raw)
+
+                lm_draw = _mirror_landmarks(lm_smooth) if CONFIG.mirror_view else lm_smooth
+                tracker.draw(frame_disp, lm_draw)
+
+                extra = f"Hand: {handed or 'Unknown'} | {pinch or 'NO_PINCH'}"
             else:
+                smoother.reset()
                 extra = "No hand detected"
 
             fps = fps_counter.tick()
-            overlay.draw(frame, state_text=initial_state.value, fps=fps, extra=extra)
+            overlay.draw(
+                frame_disp,
+                state_text=initial_state.value,
+                fps=fps,
+                extra=extra,
+            )
 
-            cv2.imshow(window_name, frame)
+            cv2.imshow(window_name, frame_disp)
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q"), ord("Q")):
                 break
@@ -72,5 +119,3 @@ def run_loop(initial_state: AppState) -> None:
         tracker.close()
         cam.release()
         cv2.destroyAllWindows()
-
- 

@@ -1,56 +1,70 @@
 virtual-gesture-mouse/
-│
 ├── requirements.txt
 ├── README.md
-│
-├── config/
-│   ├── camera_config.py
-│   ├── gesture_config.py
-│   ├── mode_config.py
-│   ├── auth_config.py
-│   └── system_config.py
-│
-├── src/
-│   ├── main.py                  # entry point
-│   ├── app_runtime.py           # main loop + orchestration
-│
-│   ├── camera/
-│   │   └── webcam.py
-│
-│   ├── preprocessing/
-│   │   ├── background_blur.py
-│   │   └── smoothing.py
-│
-│   ├── detection/
-│   │   ├── hand_detector.py     # MediaPipe wrapper
-│   │   └── motion_filter.py     # temporal stability
-│
+├── run.py
+
+├── models/
+│   └── .gitkeep
+
+├── data/
+│   ├── recordings/
+│   │   └── .gitkeep
+│   └── datasets/
+│       └── .gitkeep
+
+├── app/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── constants.py
+
+│   ├── lifecycle/
+│   │   ├── __init__.py
+│   │   ├── app.py
+│   │   ├── state_machine.py
+│   │   └── runtime_loop.py
+
+│   ├── perception/
+│   │   ├── __init__.py
+│   │   ├── camera.py
+│   │   ├── preprocessing.py
+│   │   └── hand_tracker.py
+
 │   ├── gestures/
-│   │   ├── finger_state.py      # low-level finger logic
-│   │   ├── mouse_gestures.py    # rule-based gestures
-│   │   └── gesture_engine.py    # single gesture API
-│
+│   │   ├── __init__.py
+│   │   ├── features.py
+│   │   ├── classifier.py
+│   │   ├── temporal.py
+│   │   ├── rules.py
+│   │   └── engine.py
+
 │   ├── control/
-│   │   ├── backend.py           # abstract interface
-│   │   ├── pyautogui_backend.py
-│   │   └── virtual_mouse.py
-│
-│   ├── security/
-│   │   └── gesture_authenticator.py
-│
+│   │   ├── __init__.py
+│   │   ├── mouse.py
+│   │   ├── actions.py
+│   │   └── window_watch.py
+
 │   ├── modes/
-│   │   ├── mode_switcher.py
-│   │   ├── normal_mode.py
-│   │   └── presentation_mode.py
-│
-│   ├── ml/                      # later (week 5–6)
-│   │   ├── feature_extractor.py
-│   │   ├── svm_classifier.py
-│   │   └── model_loader.py
-│
-│   └── ui/
-│       └── overlay.py
-│
-└── data/
-    └── models/
-        └── svm_gesture_model.pkl
+│   │   ├── __init__.py
+│   │   ├── general.py
+│   │   ├── presentation.py
+│   │   └── router.py
+
+│   ├── security/
+│   │   ├── __init__.py
+│   │   └── auth.py
+
+│   ├── ui/
+│   │   ├── __init__.py
+│   │   └── overlay.py
+
+│   └── utils/
+│       ├── __init__.py
+│       ├── logger.py
+│       ├── fps.py
+│       ├── timers.py
+│       └── errors.py
+
+└── tools/
+    ├── record_gestures.py
+    ├── train_svm.py
+    └── evaluate_model.py

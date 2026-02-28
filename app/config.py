@@ -1,24 +1,3 @@
-# from dataclasses import dataclass
-# from pathlib import Path
-
-
-# @dataclass(frozen=True)
-# class Paths:
-#     root: Path = Path(__file__).resolve().parents[1]
-#     models_dir: Path = root / "models"
-#     data_dir: Path = root / "data"
-
-
-# @dataclass(frozen=True)
-# class AppConfig:
-#     app_name: str = "Virtual Gesture Mouse"
-#     camera_index: int = 0
-#     target_fps: int = 30
-#     paths: Paths = Paths()
-
-
-# CONFIG = AppConfig()
-
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,18 +12,30 @@ class Paths:
 @dataclass(frozen=True)
 class AppConfig:
     app_name: str = "Virtual Gesture Mouse"
+    target_fps: int = 30
+    paths: Paths = Paths()
 
     # Camera
     camera_index: int = 0
     cam_width: int = 640
     cam_height: int = 480
+    requested_fps: int = 30
+    prefer_mjpg: bool = True
 
-    # Performance / UX
-    mirror_view: bool = False           # selfie-style
-    enable_preprocessing: bool = False  # background robustness
+    # Exposure (use auto unless you *must* lock it)
+    use_auto_exposure: bool = True
+    exposure_value: float = -4.0   # only used if auto exposure is off
+    gain_value: float = 10.0       # only used if auto exposure is off
 
-    target_fps: int = 30
-    paths: Paths = Paths()
+    # View
+    mirror_view: bool = True
+
+    # Detection performance (these two strongly affect "No hand detected")
+    detect_scale: float = 0.33       # IMPORTANT: 0.25 often becomes too small
+    inference_stride: int = 1        # IMPORTANT: run every frame until stable
+
+    # Preprocessing (keep OFF until stable; then enable)
+    enable_preprocessing: bool = False
 
 
 CONFIG = AppConfig()
