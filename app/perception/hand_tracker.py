@@ -16,12 +16,13 @@ class HandTracker:
         max_num_hands: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
+        model_complexity: int = 1,
     ):
         self._mp_hands = mp.solutions.hands
         self._hands = self._mp_hands.Hands(
             static_image_mode=False,
             max_num_hands=int(max_num_hands),
-            model_complexity=0,  # fastest
+            model_complexity=int(model_complexity),
             min_detection_confidence=float(min_detection_confidence),
             min_tracking_confidence=float(min_tracking_confidence),
         )

@@ -31,11 +31,11 @@ class AppConfig:
     mirror_view: bool = True
 
     # Detection performance (these two strongly affect "No hand detected")
-    detect_scale: float = 0.33       # IMPORTANT: 0.25 often becomes too small
-    inference_stride: int = 1        # IMPORTANT: run every frame until stable
+    detect_scale: float = 0.5
+    inference_stride: int = 1
 
-    # Preprocessing (keep OFF until stable; then enable)
-    enable_preprocessing: bool = False
+    # Preprocessing
+    enable_preprocessing: bool = True
 
 
 CONFIG = AppConfig()

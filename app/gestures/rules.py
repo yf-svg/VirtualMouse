@@ -1,2 +1,32 @@
-def validate_or_fallback(prediction, landmarks):
-    raise NotImplementedError("Implemented in Phase 2")
+from __future__ import annotations
+
+from typing import Set
+from app.gestures.registry import GestureSnapshot
+
+
+def snapshot_to_candidates(s: GestureSnapshot) -> Set[str]:
+    """
+    Convert raw snapshot signals into a flat candidate label set.
+    No AUTH/OPS logic. No special cases. Everything is equal.
+    """
+    c: Set[str] = set()
+
+    if s.pinch:
+        c.add(s.pinch)
+
+    if s.fist:
+        c.add("FIST")
+
+    if s.open_palm:
+        c.add("OPEN_PALM")
+
+    if s.number:
+        c.add(s.number)  # ONE..FIVE
+
+    if s.l_gesture:
+        c.add("L")
+
+    if s.bravo:
+        c.add("BRAVO")
+
+    return c
