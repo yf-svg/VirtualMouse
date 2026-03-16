@@ -1,96 +1,13 @@
-virtual-gesture-auth-system/
-│
-├── .gitignore
-├── README.md
-├── requirements.txt
-│
-├── config/
-│   ├── camera_config.py
-│   ├── gesture_config.py
-│   ├── presentation_config.py
-│   ├── security_config.py
-│   └── system_modes.py
-│
-├── data/
-│   ├── enrollment/
-│   │   └── user_01/
-│   │       ├── feature_stats.json
-│   │       └── gesture_samples.csv
-│   │
-│   ├── logs/
-│   │   └── auth_events.log
-│   │
-│   ├── models/
-│   │   ├── anomaly_model.pkl
-│   │   ├── auth_classifier.pkl
-│   │   └── gesture_classifier.pkl
-│   │
-│   └── processed/
-│       ├── auth_features.csv
-│       ├── control_features.csv
-│       └── presentation_features.csv
-│
-├── docs/
-│   ├── architecture_diagram.png
-│   ├── auth_pipeline.md
-│   ├── robustness_strategy.md
-│   └── viva_notes.md
-│
-├── src/
-│   ├── authentication/
-│   │   ├── enrollment.py
-│   │   ├── liveness_check.py
-│   │   ├── session_manager.py
-│   │   └── verifier.py
-│   │
-│   ├── camera/
-│   │   └── webcam.py
-│   │
-│   ├── control/
-│   │   ├── mouse_controller.py
-│   │   └── presentation_controller.py
-│   │
-│   ├── detection/
-│   │   └── hand_detector.py
-│   │
-│   ├── features/
-│   │   ├── feature_vector.py
-│   │   ├── spatial_features.py
-│   │   └── temporal_features.py
-│   │
-│   ├── gestures/
-│   │   ├── auth_gestures.py
-│   │   ├── finger_state.py
-│   │   ├── mouse_gestures.py
-│   │   └── presentation_gestures.py
-│   │
-│   ├── ml/
-│   │   ├── anomaly_filter.py
-│   │   ├── auth_classifier.py
-│   │   ├── train_auth_model.py
-│   │   └── train_gesture_model.py
-│   │
-│   ├── preprocessing/
-│   │   ├── normalization.py
-│   │   ├── roi.py
-│   │   └── smoothing.py
-│   │
-│   ├── system/
-│   │   ├── access_controller.py
-│   │   ├── lock_screen.py
-│   │   ├── login_screen.py
-│   │   └── privilege_stub.py
-│   │
-│   ├── ui/
-│   │   ├── feedback.py
-│   │   └── overlays.py
-│   │
-│   ├── utils/
-│   │   ├── fps_counter.py
-│   │   └── logger.py
-│   │
-│   └── main.py
-│
-└── tests/
-    ├── test_authentication.py
-    └── test_liveness.py
+✅ OVERALL PLAN (READ THIS ONCE)
+We will proceed in phases, exactly like a real software project:
+
+Phase 0 — Environment setup
+Phase 1 — Project skeleton (folders + empty files)
+Phase 2 — Core hand detection (MediaPipe)
+Phase 3 — Feature extraction
+Phase 4 — Lightweight ML (gesture + auth)
+Phase 5 — Authentication flow
+Phase 6 — Mouse & presentation control
+Phase 7 — Polishing, testing, viva readiness
+
+

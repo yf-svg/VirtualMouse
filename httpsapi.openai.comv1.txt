@@ -1,0 +1,9 @@
+https://api.openai.com/v1
+
+
+Agent and Edit rely on custom models that cannot be billed to an API key. Please use a Pro or Business subscription and/or disable API keys. Ask should still work.
+
+
+
+invalid model
+the model llama3.1:8b does not work with your current planor api key

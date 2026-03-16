@@ -35,7 +35,8 @@ class Preprocessor:
 
         g = gq / 100.0
         inv = 1.0 / g
-        lut = np.array([((i / 255.0) ** inv) * 255.0 for i in range(256)], dtype=np.uint8)
+        ramp = np.arange(256, dtype=np.float32) / 255.0
+        lut = np.clip((ramp ** inv) * 255.0, 0.0, 255.0).astype(np.uint8)
         self._lut_cache[gq] = lut
         return lut
 

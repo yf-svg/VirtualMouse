@@ -25,7 +25,7 @@ class Overlay:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
         # Footer
-        cv2.putText(frame_bgr, "ESC/Q: quit (Phase 1)", (10, h - 15),
+        cv2.putText(frame_bgr, "ESC/Q: quit", (10, h - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
-        cv2.putText(frame_bgr, "ESC/Q: quit (Phase 1)", (10, h - 15),
+        cv2.putText(frame_bgr, "ESC/Q: quit", (10, h - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)

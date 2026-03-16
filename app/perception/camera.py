@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import threading
-import time
 from typing import Optional
 
 import cv2
@@ -66,46 +64,3 @@ class Camera:
         if self.cap is not None:
             self.cap.release()
             self.cap = None
-
-
-class ThreadedCamera:
-    """
-    Continuously grabs frames on a background thread and keeps only the latest.
-    This prevents the main loop from blocking on camera timing/buffering.
-    """
-
-    def __init__(self, cam: Camera):
-        self.cam = cam
-        self._lock = threading.Lock()
-        self._latest = None
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-
-    def open(self) -> None:
-        self.cam.open()
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def _loop(self) -> None:
-        while self._running:
-            try:
-                frame = self.cam.read()
-                with self._lock:
-                    self._latest = frame
-            except Exception:
-                # avoid tight crash loop
-                time.sleep(0.01)
-
-    def read_latest(self):
-        with self._lock:
-            frame = None if self._latest is None else self._latest.copy()
-        if frame is None:
-            raise FrameReadError("No frame available yet")
-        return frame
-
-    def release(self) -> None:
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-        self.cam.release()

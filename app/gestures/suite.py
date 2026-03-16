@@ -27,7 +27,7 @@ class GestureSuite:
 
     def __init__(self):
         self.engine = GestureEngine(
-            TemporalCfg(window=7, confirm=4, min_hold=2),
+            TemporalCfg(window=5, confirm=2, min_hold=1),
             allowed=OPS_ALLOWED,
             priority=OPS_PRIORITY,
             allow_priority=False,

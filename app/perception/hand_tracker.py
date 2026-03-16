@@ -1,13 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 import cv2
 import mediapipe as mp
+
+
+@dataclass(frozen=True)
+class DetectedHand:
+    """
+    Stable output contract for the perception layer.
+    """
+    landmarks: Any
+    handedness: str | None = None
 
 
 class HandTracker:
     """
     MediaPipe Hands wrapper.
-    Returns landmarks + handedness (physical, based on input image).
+    Returns a stable `DetectedHand` object containing landmarks + handedness
+    (physical, based on input image).
     Provides standard MediaPipe colored drawing utilities.
     """
 
@@ -16,7 +29,7 @@ class HandTracker:
         max_num_hands: int = 1,
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
-        model_complexity: int = 1,
+        model_complexity: int = 0,
     ):
         self._mp_hands = mp.solutions.hands
         self._hands = self._mp_hands.Hands(
@@ -43,7 +56,7 @@ class HandTracker:
         if results.multi_handedness:
             handedness = results.multi_handedness[0].classification[0].label  # Left/Right
 
-        return {"landmarks": lm, "handedness": handedness}
+        return DetectedHand(landmarks=lm, handedness=handedness)
 
     def draw(self, frame_bgr, landmarks) -> None:
         """Standard MediaPipe colored connections + landmark styles."""

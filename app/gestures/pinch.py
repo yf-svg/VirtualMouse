@@ -67,7 +67,6 @@ class PinchCfg:
     support_extended_tip_to_palm_min: float = 0.70
     support_extended_curl_ratio_min: float = 1.03
     support_extended_min_count_single: int = 2
-    support_extended_min_count_imr: int = 1
     im_ring_clear_off: float = 0.56
     im_ring_extended_tip_to_palm_min: float = 0.72
     im_ring_extended_curl_ratio_min: float = 1.04
@@ -92,7 +91,7 @@ class PinchDetector:
     """
     Detects:
       Singles: PINCH_INDEX / PINCH_MIDDLE / PINCH_RING / PINCH_PINKY
-      Chords : PINCH_IM / PINCH_IMR / PINCH_IMRP
+      Chords : PINCH_IM / PINCH_IMRP
 
     Key improvements:
       - IMRP has a strict "strong pinch" gate
@@ -104,7 +103,6 @@ class PinchDetector:
 
         self._chords: List[Tuple[FrozenSet[str], str]] = [
             (frozenset({"I", "M", "R", "P"}), "PINCH_IMRP"),
-            (frozenset({"I", "M", "R"}), "PINCH_IMR"),
             (frozenset({"I", "M"}), "PINCH_IM"),
         ]
 
@@ -221,6 +219,7 @@ class PinchDetector:
             others_min = min(di, dm, dr)
             if (
                 p_on
+                and support_extended["R"]
                 and single_support["P"] >= self.cfg.support_extended_min_count_single
                 and (dp + self.cfg.pinky_priority_margin) < others_min
             ):
@@ -236,15 +235,6 @@ class PinchDetector:
                     ):
                         cand = "PINCH_IMRP"
 
-                # IMR requires a visibly extended pinky, not a participating pinky.
-                if (
-                    cand is None
-                    and (i_on and m_on and r_on)
-                    and pinky_extended
-                    and not p_on
-                    and single_support["P"] >= self.cfg.support_extended_min_count_imr
-                ):
-                    cand = "PINCH_IMR"
                 if cand is None and (i_on and m_on) and ring_clearly_not_participating:
                     cand = "PINCH_IM"
 
@@ -255,9 +245,15 @@ class PinchDetector:
                         active.append(("PINCH_INDEX", score_map["I"] + self.cfg.palm_weight * finger_states["I"].tip_to_palm))
                     if m_on and single_support["M"] >= self.cfg.support_extended_min_count_single:
                         active.append(("PINCH_MIDDLE", score_map["M"] + self.cfg.palm_weight * finger_states["M"].tip_to_palm))
-                    if r_on and single_support["R"] >= self.cfg.support_extended_min_count_single:
+                    # PINCH_RING should keep the pinky visibly extended so it
+                    # does not overlap with V/peace-style poses where ring and
+                    # pinky are folded inward.
+                    if r_on and pinky_extended and single_support["R"] >= self.cfg.support_extended_min_count_single:
                         active.append(("PINCH_RING", score_map["R"] + self.cfg.palm_weight * finger_states["R"].tip_to_palm))
-                    if p_on and single_support["P"] >= self.cfg.support_extended_min_count_single:
+                    # PINCH_PINKY should keep the ring finger extended so it
+                    # does not overlap with peace/two-finger poses where ring
+                    # and pinky are folded inward together.
+                    if p_on and support_extended["R"] and single_support["P"] >= self.cfg.support_extended_min_count_single:
                         active.append(("PINCH_PINKY", score_map["P"] + self.cfg.palm_weight * finger_states["P"].tip_to_palm))
 
                     if active:
@@ -280,7 +276,6 @@ class PinchDetector:
             if self._state.startswith("PINCH_IM"):
                 chord_req = {
                     "PINCH_IM": {"I", "M"},
-                    "PINCH_IMR": {"I", "M", "R"},
                     "PINCH_IMRP": {"I", "M", "R", "P"},
                 }.get(self._state)
 

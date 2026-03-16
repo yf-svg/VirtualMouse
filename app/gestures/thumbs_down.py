@@ -24,8 +24,8 @@ from app.gestures.features import (
     PINKY_PIP,
     PINKY_DIP,
     PINKY_TIP,
-    finger_is_extended,
     finger_is_curled,
+    finger_is_extended,
     finger_metrics,
     get_landmarks,
     hand_scale,
@@ -36,30 +36,30 @@ from app.gestures.features import (
 
 
 @dataclass
-class BravoCfg:
+class ThumbsDownCfg:
     use_3d: bool = True
     min_scale: float = 1e-4
 
     thumb_tip_to_palm: float = 0.62
     thumb_tip_to_wrist: float = 0.82
     thumb_vertical_ratio: float = 1.05
-    thumb_above_wrist: float = 0.04
-    thumb_above_knuckles: float = 0.02
+    thumb_below_wrist: float = 0.02
+    thumb_below_knuckles: float = 0.04
     thumb_pinch_exclusion: float = 0.24
-    curled_tip_to_palm: float = 0.88
-    curled_curl_ratio: float = 1.10
+    compact_tip_to_palm: float = 0.88
+    compact_curl_ratio: float = 1.10
     min_curled: int = 4
 
 
-class BravoDetector:
-    def __init__(self, cfg: BravoCfg = BravoCfg()):
+class ThumbsDownDetector:
+    def __init__(self, cfg: ThumbsDownCfg = ThumbsDownCfg()):
         self.cfg = cfg
 
     def _finger_compact(self, lm, mcp: int, pip: int, dip: int, tip: int, *, scale: float) -> bool:
         """
-        Back-of-hand camera views often make a curled finger look less tightly folded
-        than palm-side views. Accept a strict curl or a compact folded profile, but
-        still reject any finger that reads as clearly extended.
+        A thumbs-down pose is a fist-like hand with the thumb isolated downward.
+        For the back-of-hand view, accept either a strict curl or a compact folded
+        finger, but reject any finger that reads as clearly extended.
         """
         metrics = finger_metrics(lm, mcp, pip, dip, tip, use_3d=self.cfg.use_3d, scale=scale)
         if finger_is_extended(metrics):
@@ -67,8 +67,8 @@ class BravoDetector:
         return (
             finger_is_curled(metrics)
             or (
-                metrics.tip_to_palm <= self.cfg.curled_tip_to_palm
-                and metrics.curl_ratio <= self.cfg.curled_curl_ratio
+                metrics.tip_to_palm <= self.cfg.compact_tip_to_palm
+                and metrics.curl_ratio <= self.cfg.compact_curl_ratio
                 and lm[tip].y > lm[pip].y
             )
         )
@@ -90,31 +90,32 @@ class BravoDetector:
             return False
         if thumb.tip_to_wrist < self.cfg.thumb_tip_to_wrist:
             return False
-        if (wrist.y - thumb_tip.y) <= (self.cfg.thumb_above_wrist * scale):
+        if (thumb_tip.y - wrist.y) <= (self.cfg.thumb_below_wrist * scale):
             return False
-        if (knuckle_y - thumb_tip.y) <= (self.cfg.thumb_above_knuckles * scale):
+        if (thumb_tip.y - knuckle_y) <= (self.cfg.thumb_below_knuckles * scale):
             return False
-        if not (thumb_tip.y < thumb_ip.y < thumb_mcp.y):
+        if not (thumb_tip.y > thumb_ip.y > thumb_mcp.y):
             return False
 
         dx = thumb_tip.x - thumb_mcp.x
         dy = thumb_tip.y - thumb_mcp.y
-        if dy >= 0 or abs(dy) < self.cfg.thumb_vertical_ratio * max(abs(dx), 1e-6):
+        if dy <= 0 or dy < self.cfg.thumb_vertical_ratio * max(abs(dx), 1e-6):
             return False
 
         if min_thumb_tip_distance_to_fingers(lm, use_3d=self.cfg.use_3d, scale=scale) < self.cfg.thumb_pinch_exclusion:
             return False
 
-        curled = [
+        compact = [
             self._finger_compact(lm, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP, scale=scale),
             self._finger_compact(lm, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP, scale=scale),
             self._finger_compact(lm, RING_MCP, RING_PIP, RING_DIP, RING_TIP, scale=scale),
             self._finger_compact(lm, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP, scale=scale),
         ]
-        return sum(1 for v in curled if v) >= self.cfg.min_curled
+        return sum(1 for v in compact if v) >= self.cfg.min_curled
 
 
-_DEFAULT = BravoDetector()
+_DEFAULT = ThumbsDownDetector()
 
-def detect_bravo(landmarks: Any) -> bool:
+
+def detect_thumbs_down(landmarks: Any) -> bool:
     return _DEFAULT.detect(landmarks)

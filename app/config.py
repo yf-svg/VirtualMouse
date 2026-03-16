@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -13,7 +13,7 @@ class Paths:
 class AppConfig:
     app_name: str = "Virtual Gesture Mouse"
     target_fps: int = 30
-    paths: Paths = Paths()
+    paths: Paths = field(default_factory=Paths)
 
     # Camera
     camera_index: int = 0
@@ -31,7 +31,7 @@ class AppConfig:
     mirror_view: bool = True
 
     # Detection performance (these two strongly affect "No hand detected")
-    detect_scale: float = 0.5
+    detect_scale: float = 0.4
     inference_stride: int = 1
 
     # Preprocessing

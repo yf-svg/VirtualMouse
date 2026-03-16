@@ -17,8 +17,14 @@ def snapshot_to_candidates(s: GestureSnapshot) -> Set[str]:
     if s.fist:
         c.add("FIST")
 
+    if s.closed_palm:
+        c.add("CLOSED_PALM")
+
     if s.open_palm:
         c.add("OPEN_PALM")
+
+    if s.peace_sign:
+        c.add("PEACE_SIGN")
 
     if s.number:
         c.add(s.number)  # ONE..FIVE
@@ -28,5 +34,8 @@ def snapshot_to_candidates(s: GestureSnapshot) -> Set[str]:
 
     if s.bravo:
         c.add("BRAVO")
+
+    if s.thumbs_down:
+        c.add("THUMBS_DOWN")
 
     return c
