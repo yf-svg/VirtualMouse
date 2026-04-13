@@ -18,11 +18,12 @@ class Overlay:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
         if extra:
-            y += 30
-            cv2.putText(frame_bgr, extra, (10, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
-            cv2.putText(frame_bgr, extra, (10, y),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            for line in str(extra).splitlines():
+                y += 30
+                cv2.putText(frame_bgr, line, (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 4, cv2.LINE_AA)
+                cv2.putText(frame_bgr, line, (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
         # Footer
         cv2.putText(frame_bgr, "ESC/Q: quit", (10, h - 15),

@@ -1,0 +1,274 @@
+ 
+
+Title: SMV machine learning based, Gesture based authentication, dual mode operation virtual mouse in short virtual mouse. 
+
+## Project Goal
+
+Design and implement a **real-time AI-enhanced gesture-controlled virtual mouse system** as a local desktop application using Python.
+
+The system must:
+
+* Track **a single visible human hand from a webcam**, regardless of:
+
+  * the user’s identity
+  * skin tone
+  * hand size
+  * background environment
+* Recognize gestures consistently across **different users and changing backgrounds**
+* Translate gestures into operating-system-level actions such as:
+
+  * mouse movement
+  * clicks
+  * screenshots
+  * presentation navigation
+* Support **gesture-based authentication**
+* Support **multiple operating modes** (normal and presentation)
+* Provide **real-time visual feedback** using a lightweight UI overlay
+* Operate entirely **offline** on consumer hardware
+* Remain stable, responsive, and safe for continuous use
+
+---
+
+## Development Authority & Workflow Rules
+
+You are the **lead architect, system designer, and sole developer**.
+
+You must:
+
+* Design the full system architecture
+* Write **all Python code**
+* Decide **module boundaries and file structure**
+* Break development into **small, testable phases**
+* Provide **exact file paths, filenames, and run commands**
+* Explain what output or behavior to expect at each step
+* Pause and wait for confirmation before proceeding to the next phase
+
+I (the user) will only:
+
+* Install dependencies
+* Run commands you specify
+* Report results or errors back to you
+
+Do **not**:
+
+* Skip steps
+* Assume code exists unless you wrote it
+* Change the approved technology stack
+* Optimize prematurely at the cost of clarity or stability
+
+Favor:
+
+* determinism
+* modularity
+* real-time safety
+* maintainability
+* academic clarity
+
+---
+
+## Approved Technology Stack (STRICT – DO NOT CHANGE VERSIONS)
+
+### Core
+
+* numpy==1.26.4
+* opencv-contrib-python==4.8.1.78
+* mediapipe==0.10.9
+
+### Mouse & System Control
+
+* pyautogui==0.9.54
+* pynput==1.8.1
+* PyGetWindow==0.0.9
+
+### MediaPipe Stability Dependencies
+
+* protobuf==3.20.3
+* absl-py==2.4.0
+* flatbuffers==25.12.19
+
+### Image Handling
+
+* pillow==12.1.0
+
+### Utilities
+
+* six==1.17.0
+
+### Machine Learning (Optional Gesture Classification)
+
+* scikit-learn==1.3.2
+* joblib==1.3.2
+
+---
+
+## Core Architectural Requirements
+
+The system must follow a **modular, layered architecture** with clear separation of concerns.
+
+Required layers/modules:
+
+* Configuration layer (`config.py`)
+* Core perception layer:
+
+  * camera handling
+  * hand landmark detection
+* Gesture processing layer:
+
+  * rule-based recognition (default)
+  * optional ML-based classification (SVM)
+* Control layer (OS actions)
+* Security layer (gesture-based authentication)
+* Mode management layer (normal / presentation)
+* UI overlay layer (visual feedback)
+* Application lifecycle & state management
+* **Background robustness layer** (see below)
+
+The system must:
+
+* Track **only one hand at a time**
+* Be user-agnostic (no per-user calibration required)
+* Be background-indifferent
+* Degrade gracefully on errors (camera loss, no hand detected, etc.)
+
+---
+
+## Background-Indifferent Hand & Gesture Recognition (MANDATORY)
+
+The system must be designed so that hand detection and gesture recognition remain robust **regardless of background complexity**, lighting variation, or scene content.
+
+To enforce this, you must:
+
+1. **Introduce a dedicated module/file** responsible for background robustness logic
+   Examples:
+
+   * `background_filter.py`
+   * `vision_preprocessing.py`
+   * `scene_normalizer.py`
+
+2. This module must:
+
+   * Preprocess camera frames before hand landmark detection
+   * Reduce background noise and visual clutter
+   * Improve hand visibility consistency across:
+
+     * different rooms
+     * different lighting conditions
+     * moving or cluttered backgrounds
+
+3. Possible techniques (choose appropriately, do not overcomplicate):
+
+   * adaptive thresholding
+   * color-space normalization
+   * contrast enhancement
+   * region-of-interest isolation
+   * motion-based filtering
+   * hand-centric cropping guided by MediaPipe output
+
+4. The background-robustness logic must:
+
+   * be independent of user identity
+   * not rely on fixed background assumptions
+   * complement (not replace) MediaPipe and SVM logic
+
+5. This module must be integrated cleanly into the perception pipeline without breaking real-time performance.
+
+---
+
+Gesture Recognition Strategy (Updated)
+
+Gesture recognition in the system must prioritize machine learning–based classification while maintaining deterministic safety and real-time performance on CPU-only hardware.
+
+The system shall employ a hybrid recognition strategy consisting of:
+
+Primary Recognition: Machine Learning Classifier
+
+A classical machine learning model (Support Vector Machine) shall serve as the primary gesture recognizer
+
+The classifier shall operate on hand-invariant feature vectors derived from MediaPipe landmarks, including:
+
+normalized distances between key landmarks
+
+joint angles and relative finger orientations
+
+scale- and position-independent features
+
+The model must be trained to generalize across:
+
+different users
+
+different hand sizes
+
+different backgrounds
+
+Model inference must be lightweight and suitable for real-time CPU execution
+
+The trained model shall be serialized and loaded at runtime using joblib
+
+The system must include an explicit feature extraction stage that converts raw hand landmark coordinates into normalized, hand-invariant feature vectors suitable for classical machine learning. Feature design must ensure invariance to hand size, screen position, camera distance, and user identity.
+
+Supporting Logic: Rule-Based Validation and Fallback
+
+Rule-based gesture logic shall be retained as:
+
+a fallback mechanism if the ML model is unavailable
+
+a validation layer to reject unstable or ambiguous predictions
+
+a debouncing mechanism to prevent repeated or accidental actions
+
+Rule-based logic shall not be the primary recognition method
+
+Temporal Stability
+
+Gesture predictions must be temporally stabilized using:
+
+sliding windows
+
+confidence thresholds
+
+majority voting across frames
+
+This ensures consistent gesture recognition under noise and motion variability
+
+This hybrid strategy ensures that the system demonstrates strong machine learning integration, robustness, and real-time performance while remaining interpretable and suitable for academic evaluation.
+---
+
+## Application Lifecycle & Activation Model
+
+The application must support a **safe and user-friendly activation flow**:
+
+* The application is launched manually (e.g., via hotkey or command)
+* On launch:
+
+  * the system starts in an **idle or locked state**
+* Gesture-based authentication unlocks interaction
+* Mode selection follows authentication
+* Full gesture control operates only in active mode
+* UI overlays appear only when relevant
+* The system can return to idle/sleep without exiting
+
+This lifecycle must be implemented without converting the application into a system service.
+
+
+Now create Execution Strategy i suggest the following start
+
+  begin with:
+
+### Phase 0 – Environment & Project Setup
+
+Deliverables:
+
+* `requirements.txt`
+* full directory structure
+* empty module files
+* explanation of setup steps
+
+After Phase 0:
+
+* Wait for confirmation before continuing
+
+---
+
+## Begin Now
+
+Start with **Phase 0: Environment & Project Setup**.

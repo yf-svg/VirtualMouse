@@ -38,4 +38,10 @@ def snapshot_to_candidates(s: GestureSnapshot) -> Set[str]:
     if s.thumbs_down:
         c.add("THUMBS_DOWN")
 
+    if s.point_right:
+        c.add("POINT_RIGHT")
+
+    if s.point_left:
+        c.add("POINT_LEFT")
+
     return c

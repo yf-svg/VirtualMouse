@@ -8,7 +8,21 @@ import cv2
 
 from app.config import CONFIG
 from app.constants import AppState
+from app.control.actions import format_action_intent
+from app.control.clutch import ClutchController
+from app.control.execution import ExecutionBatchReport, OSActionExecutor
+from app.control.execution_safety import ExecutionSafetyGate
+from app.control.cursor_preview import CursorPreviewController
+from app.control.cursor_space import cursor_point_from_landmarks
+from app.control.primary_interaction import PrimaryInteractionController
+from app.control.secondary_interaction import SecondaryInteractionController
+from app.control.scroll_mode import ScrollModeController
+from app.control.window_watch import PresentationContext, WindowWatch
+from app.gestures.sets.auth_set import AUTH_ALLOWED, AUTH_PRIORITY
 from app.gestures.suite import GestureSuite
+from app.modes.general import resolve_general_action
+from app.modes.router import ModeRouter
+from app.modes.presentation import PresentationModeOut, resolve_presentation_action
 from app.perception.camera import Camera
 from app.perception.hand_tracker import HandTracker
 from app.perception.landmark_smoothing import SelectiveLandmarkSmoother
@@ -25,7 +39,17 @@ class RuntimeContext:
     pre: Preprocessor
     tracker: HandTracker
     smoother: SelectiveLandmarkSmoother
-    suite: GestureSuite
+    auth_suite: GestureSuite
+    ops_suite: GestureSuite
+    router: ModeRouter
+    clutch: ClutchController
+    scroll_mode: ScrollModeController
+    primary_interaction: PrimaryInteractionController
+    secondary_interaction: SecondaryInteractionController
+    cursor_preview: CursorPreviewController
+    executor: OSActionExecutor
+    execution_safety: ExecutionSafetyGate
+    window_watch: WindowWatch
     overlay: Overlay
     fps_counter: FPSCounter
     window_name: str
@@ -43,6 +67,8 @@ class RuntimeState:
     cam_frames: int = 0
     cam_fps: float = 0.0
     cam_fps_t0: float = 0.0
+    auth_status: str = "idle"
+    auth_progress_text: str = "Auth 0/3"
 
 
 def _mirror_landmarks(landmarks):
@@ -53,7 +79,7 @@ def _mirror_landmarks(landmarks):
     return lm2
 
 
-def _build_runtime_context() -> RuntimeContext:
+def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
     cam = Camera(
         device_index=CONFIG.camera_index,
         width=CONFIG.cam_width,
@@ -68,7 +94,17 @@ def _build_runtime_context() -> RuntimeContext:
         tip_beta=0.45,
         d_cutoff=1.0,
     )
-    suite = GestureSuite()
+    auth_suite = GestureSuite(allowed=AUTH_ALLOWED, priority=AUTH_PRIORITY)
+    ops_suite = GestureSuite()
+    router = ModeRouter(initial_state=initial_state)
+    clutch = ClutchController()
+    scroll_mode = ScrollModeController()
+    primary_interaction = PrimaryInteractionController()
+    secondary_interaction = SecondaryInteractionController()
+    cursor_preview = CursorPreviewController()
+    executor = OSActionExecutor()
+    execution_safety = ExecutionSafetyGate()
+    window_watch = WindowWatch()
     overlay = Overlay()
     fps_counter = FPSCounter(avg_window=30)
 
@@ -89,7 +125,17 @@ def _build_runtime_context() -> RuntimeContext:
         pre=pre,
         tracker=tracker,
         smoother=smoother,
-        suite=suite,
+        auth_suite=auth_suite,
+        ops_suite=ops_suite,
+        router=router,
+        clutch=clutch,
+        scroll_mode=scroll_mode,
+        primary_interaction=primary_interaction,
+        secondary_interaction=secondary_interaction,
+        cursor_preview=cursor_preview,
+        executor=executor,
+        execution_safety=execution_safety,
+        window_watch=window_watch,
         overlay=overlay,
         fps_counter=fps_counter,
         window_name=window_name,
@@ -118,14 +164,65 @@ def _update_camera_fps(seq: int, state: RuntimeState) -> None:
 
 
 def _format_hand_overlay(handed: str | None, out) -> str:
+    source = out.source.upper()
+    confidence = f"{out.confidence:.2f}" if out.confidence is not None else "-"
     return (
         f"Hand:{handed or 'Unknown'} | "
+        f"SRC:{source}({confidence}) | "
         f"CHOSEN:{out.chosen or 'NONE'} | "
         f"STABLE:{out.stable or 'NONE'} | "
+        f"READY:{out.eligible or 'NONE'} | "
         f"CAND:{','.join(sorted(out.candidates)) if out.candidates else 'NONE'} | "
+        f"HOLD:{out.hold_frames} | "
         f"EDGE:+{out.down or '-'} -{out.up or '-'} | "
-        f"WHY:{out.reason}"
+        f"WHY:{out.reason} | GATE:{out.gate_reason}"
     )
+
+
+def _format_locked_overlay(handed: str | None, out, runtime_state: RuntimeState) -> str:
+    return f"{_format_hand_overlay(handed, out)} | AUTH:{runtime_state.auth_status} | {runtime_state.auth_progress_text}"
+
+
+def _format_execution_report(report: ExecutionBatchReport) -> str:
+    parts: list[str] = []
+    for name, item in (
+        ("CUR", report.cursor),
+        ("PRI", report.primary),
+        ("SEC", report.secondary),
+        ("SCR", report.scroll),
+    ):
+        if item.performed:
+            label = item.reason
+            if item.target is not None:
+                label = f"{label}@{item.target.x},{item.target.y}"
+            parts.append(f"{name}:{label}")
+    if not parts:
+        for name, item in (
+            ("CUR", report.cursor),
+            ("PRI", report.primary),
+            ("SEC", report.secondary),
+            ("SCR", report.scroll),
+        ):
+            if item.reason not in {"execution_disabled", "primary_no_action", "secondary_no_action", "scroll_no_action"}:
+                parts.append(f"{name}:{item.reason}")
+                break
+    if not parts:
+        parts.append("idle")
+    return f"EXEC:{'|'.join(parts)}"
+
+
+def _format_execution_policy_status(ctx: RuntimeContext, safety_summary: str) -> str:
+    return f"XPOL:{ctx.executor.policy_status_text()}|SAFE:{safety_summary}"
+
+
+def _format_presentation_context(context: PresentationContext) -> str:
+    return f"PCTX:{context.summary()}"
+
+
+def _format_single_execution_report(report) -> str:
+    if report.performed:
+        return f"EXEC:{report.reason}"
+    return f"EXEC:{report.reason}"
 
 def run_loop(initial_state: AppState) -> None:
     cv2.setUseOptimized(True)
@@ -134,8 +231,7 @@ def run_loop(initial_state: AppState) -> None:
     except Exception:
         pass
 
-    state_text = initial_state.value
-    ctx = _build_runtime_context()
+    ctx = _build_runtime_context(initial_state)
     state = _initial_runtime_state()
 
     try:
@@ -155,7 +251,7 @@ def run_loop(initial_state: AppState) -> None:
                 fps = ctx.fps_counter.tick()
                 ctx.overlay.draw(
                     disp,
-                    state_text=state_text,
+                    state_text=ctx.router.state.value,
                     fps=fps,
                     extra=f"{state.last_extra} | CAM_FPS:{state.cam_fps:.1f}",
                 )
@@ -166,6 +262,7 @@ def run_loop(initial_state: AppState) -> None:
                 continue
 
             state.last_seq_processed = seq
+            frame_now = time.monotonic()
 
             frame_disp = cv2.flip(frame_raw, 1) if CONFIG.mirror_view else frame_raw
 
@@ -183,26 +280,193 @@ def run_loop(initial_state: AppState) -> None:
                 state.last_hand = ctx.tracker.detect(small)
             state.frame_i += 1
 
+            presentation_context = ctx.window_watch.presentation_context()
+            ctx.router.sync_presentation_permission(presentation_context.allowed)
+
             if state.last_hand:
                 lm_raw = state.last_hand.landmarks
                 handed = state.last_hand.handedness
-
-                out = ctx.suite.detect(lm_raw)
                 lm_smooth = ctx.smoother.apply(lm_raw)
+
+                if ctx.router.state in {AppState.IDLE_LOCKED, AppState.AUTHENTICATING}:
+                    out = ctx.auth_suite.detect(state.last_hand)
+                    route = ctx.router.route_auth_edge(out.down, now=frame_now)
+                    state.auth_status = route.auth_status
+                    state.auth_progress_text = route.auth_progress_text
+                    extra = _format_locked_overlay(handed, out, state)
+                    if route.suite_key == "ops":
+                        ctx.auth_suite.reset()
+                        ctx.ops_suite.reset()
+                    ctx.clutch.reset()
+                    ctx.scroll_mode.reset()
+                    ctx.primary_interaction.reset()
+                    ctx.secondary_interaction.reset()
+                    ctx.cursor_preview.reset()
+                    ctx.execution_safety.reset()
+                else:
+                    out = ctx.ops_suite.detect(state.last_hand)
+                    cursor_point = cursor_point_from_landmarks(lm_smooth)
+                    if ctx.router.state == AppState.ACTIVE_PRESENTATION:
+                        ctx.clutch.reset()
+                        ctx.scroll_mode.reset()
+                        ctx.primary_interaction.reset()
+                        ctx.secondary_interaction.reset()
+                        ctx.cursor_preview.reset()
+                        ctx.execution_safety.reset()
+                        presentation_out = resolve_presentation_action(
+                            gesture_label=out.eligible,
+                            context=presentation_context,
+                        )
+                        safety = ctx.execution_safety.evaluate_presentation(
+                            suite_out=out,
+                            presentation_out=presentation_out,
+                            hand_present=True,
+                        )
+                        action_intent = presentation_out.intent
+                        exec_report = ctx.executor.apply_presentation_mode(
+                            presentation_out,
+                            allow=safety.allow,
+                            suppress_reason=safety.reason,
+                        )
+                        extra = (
+                            f"{_format_hand_overlay(handed, out)} | "
+                            f"{_format_presentation_context(presentation_context)} | "
+                            f"CLT:{ctx.clutch.state.value} | "
+                            f"SCR:{ctx.scroll_mode.state.value} | "
+                            f"PRI:{ctx.primary_interaction.state.value} | "
+                            f"SEC:{ctx.secondary_interaction.state.value} | "
+                            f"CUR:{ctx.cursor_preview.state.value} | "
+                            f"{format_action_intent(action_intent)} | "
+                            f"{_format_execution_policy_status(ctx, safety.reason)} | "
+                            f"{_format_single_execution_report(exec_report)}"
+                        )
+                    else:
+                        general_out = resolve_general_action(
+                            gesture_label=out.eligible,
+                            cursor_point=cursor_point,
+                            clutch_controller=ctx.clutch,
+                            scroll_controller=ctx.scroll_mode,
+                            primary_controller=ctx.primary_interaction,
+                            secondary_controller=ctx.secondary_interaction,
+                            cursor_controller=ctx.cursor_preview,
+                            now=frame_now,
+                        )
+                        safety = ctx.execution_safety.evaluate(
+                            suite_out=out,
+                            general_out=general_out,
+                            hand_present=True,
+                        )
+                        action_intent = general_out.intent
+                        exec_report = ctx.executor.apply_general_mode(general_out, safety=safety)
+                        cursor_preview = general_out.cursor.preview_point
+                        cursor_preview_text = "CUR:None"
+                        if cursor_preview is not None:
+                            cursor_preview_text = f"CURPREV:{cursor_preview.x:.2f},{cursor_preview.y:.2f}"
+                        extra = (
+                            f"{_format_hand_overlay(handed, out)} | "
+                            f"CLT:{general_out.clutch.state.value} | "
+                            f"SCR:{general_out.scroll.state.value}/{general_out.scroll.axis.value} | "
+                            f"PRI:{general_out.primary.state.value} | "
+                            f"SEC:{general_out.secondary.state.value} | "
+                            f"CUR:{general_out.cursor.state.value}({general_out.cursor.policy.gesture_label or '-'}) | "
+                            f"{cursor_preview_text} | "
+                            f"{format_action_intent(action_intent)} | "
+                            f"{_format_execution_policy_status(ctx, safety.summary())} | "
+                            f"{_format_execution_report(exec_report)}"
+                        )
                 lm_draw = _mirror_landmarks(lm_smooth) if CONFIG.mirror_view else lm_smooth
                 ctx.tracker.draw(frame_disp, lm_draw)
-                extra = _format_hand_overlay(handed, out)
             else:
                 ctx.smoother.reset()
-                ctx.suite.reset()
-                extra = "No hand detected"
+                if ctx.router.state in {AppState.IDLE_LOCKED, AppState.AUTHENTICATING}:
+                    ctx.auth_suite.reset()
+                    route = ctx.router.route_auth_edge(None, now=frame_now)
+                    state.auth_status = route.auth_status
+                    state.auth_progress_text = route.auth_progress_text
+                    extra = f"No hand detected | AUTH:{state.auth_status} | {state.auth_progress_text}"
+                    ctx.clutch.reset()
+                    ctx.scroll_mode.reset()
+                    ctx.primary_interaction.reset()
+                    ctx.secondary_interaction.reset()
+                    ctx.cursor_preview.reset()
+                    ctx.execution_safety.reset()
+                elif ctx.router.state == AppState.ACTIVE_GENERAL:
+                    ctx.ops_suite.reset()
+                    general_out = resolve_general_action(
+                        gesture_label=None,
+                        cursor_point=None,
+                        clutch_controller=ctx.clutch,
+                        scroll_controller=ctx.scroll_mode,
+                        primary_controller=ctx.primary_interaction,
+                        secondary_controller=ctx.secondary_interaction,
+                        cursor_controller=ctx.cursor_preview,
+                        now=frame_now,
+                    )
+                    safety = ctx.execution_safety.evaluate(
+                        suite_out=None,
+                        general_out=general_out,
+                        hand_present=False,
+                    )
+                    exec_report = ctx.executor.apply_general_mode(general_out, safety=safety)
+                    cursor_preview = general_out.cursor.preview_point
+                    cursor_preview_text = "CUR:None"
+                    if cursor_preview is not None:
+                        cursor_preview_text = f"CURPREV:{cursor_preview.x:.2f},{cursor_preview.y:.2f}"
+                    extra = (
+                        f"No hand detected | CLT:{general_out.clutch.state.value} | "
+                        f"SCR:{general_out.scroll.state.value}/{general_out.scroll.axis.value} | "
+                        f"PRI:{general_out.primary.state.value} | "
+                        f"SEC:{general_out.secondary.state.value} | "
+                        f"CUR:{general_out.cursor.state.value} | "
+                        f"{cursor_preview_text} | "
+                        f"{format_action_intent(general_out.intent)} | "
+                        f"{_format_execution_policy_status(ctx, safety.summary())} | "
+                        f"{_format_execution_report(exec_report)}"
+                    )
+                elif ctx.router.state == AppState.ACTIVE_PRESENTATION:
+                    ctx.ops_suite.reset()
+                    ctx.clutch.reset()
+                    ctx.scroll_mode.reset()
+                    ctx.primary_interaction.reset()
+                    ctx.secondary_interaction.reset()
+                    ctx.cursor_preview.reset()
+                    presentation_out = resolve_presentation_action(
+                        gesture_label=None,
+                        context=presentation_context,
+                    )
+                    safety = ctx.execution_safety.evaluate_presentation(
+                        suite_out=None,
+                        presentation_out=presentation_out,
+                        hand_present=False,
+                    )
+                    exec_report = ctx.executor.apply_presentation_mode(
+                        presentation_out,
+                        allow=safety.allow,
+                        suppress_reason=safety.reason,
+                    )
+                    extra = (
+                        f"No hand detected | "
+                        f"{_format_presentation_context(presentation_context)} | "
+                        f"{format_action_intent(presentation_out.intent)} | "
+                        f"{_format_execution_policy_status(ctx, safety.reason)} | "
+                        f"{_format_single_execution_report(exec_report)}"
+                    )
+                else:
+                    ctx.ops_suite.reset()
+                    ctx.clutch.reset()
+                    ctx.scroll_mode.reset()
+                    ctx.primary_interaction.reset()
+                    ctx.secondary_interaction.reset()
+                    ctx.cursor_preview.reset()
+                    ctx.execution_safety.reset()
+                    extra = "No hand detected"
 
             fps = ctx.fps_counter.tick()
 
             frame_out = frame_disp.copy()
             ctx.overlay.draw(
                 frame_out,
-                state_text=state_text,
+                state_text=ctx.router.state.value,
                 fps=fps,
                 extra=f"{extra} | CAM_FPS:{state.cam_fps:.1f}",
             )

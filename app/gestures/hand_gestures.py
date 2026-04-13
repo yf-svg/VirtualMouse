@@ -107,12 +107,6 @@ class GestureCfg:
     # L gesture perpendicular check
     l_perp_cos_max: float = 0.45
 
-    # BRAVO / thumbs-up
-    thumb_up_y_margin: float = 0.08     # normalized by scale
-    bravo_thumb_far: float = 0.70       # dist(thumb_tip, wrist)/scale
-    bravo_require_strict_curl: bool = True
-
-
 class HandGestures:
     def __init__(self, cfg: GestureCfg = GestureCfg()):
         self.cfg = cfg
@@ -402,15 +396,15 @@ class HandGestures:
         if self.detect_peace_sign(landmarks):
             return None
 
-        ext_i = self.finger_extended(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
-        ext_m = self.finger_extended(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
-        ext_r = self.finger_extended(lm, RING_TIP, RING_PIP, RING_MCP)
-        ext_p = self.finger_extended(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP)
+        ext_i = self._finger_raised(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
+        ext_m = self._finger_raised(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
+        ext_r = self._finger_raised(lm, RING_TIP, RING_PIP, RING_MCP)
+        ext_p = self._finger_raised(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP)
 
-        cur_i = self.finger_curled(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
-        cur_m = self.finger_curled(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
-        cur_r = self.finger_curled(lm, RING_TIP, RING_PIP, RING_MCP)
-        cur_p = self.finger_curled(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP)
+        cur_i = self._finger_folded_toward_palm(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP) or self.finger_curled(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
+        cur_m = self._finger_folded_toward_palm(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP) or self.finger_curled(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
+        cur_r = self._finger_folded_toward_palm(lm, RING_TIP, RING_PIP, RING_MCP) or self.finger_curled(lm, RING_TIP, RING_PIP, RING_MCP)
+        cur_p = self._finger_folded_toward_palm(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP) or self.finger_curled(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP)
 
         ext = [ext_i, ext_m, ext_r, ext_p]
         n = sum(1 for v in ext if v)
@@ -456,48 +450,10 @@ class HandGestures:
         return cosv <= self.cfg.l_perp_cos_max
 
     def detect_thumbs_up(self, landmarks: Any) -> bool:
-        """
-        ✅ BRAVO / THUMBS_UP (strict):
-          - thumb is clearly UP (y ordering + above wrist)
-          - thumb is far from wrist (dominant)
-          - index/middle/ring/pinky are curled (STRICT)
-          - explicit exclusion: if index looks extended => NOT BRAVO (prevents ONE confusion)
-        """
-        lm = self._lm(landmarks)
-        scale = self._scale(lm)
+        # Canonical thumbs-up / BRAVO detection now lives in app.gestures.bravo.
+        from app.gestures.bravo import detect_bravo as _detect_bravo
 
-        # Thumb "up" geometry using y order (smaller y is up)
-        tip = lm[THUMB_TIP]
-        ip = lm[THUMB_IP]
-        mcp = lm[THUMB_MCP]
-        wrist = lm[WRIST]
-
-        # must be pointing upward-ish: tip above ip above mcp
-        if not (tip.y < ip.y < mcp.y):
-            return False
-
-        # thumb tip must be above wrist by margin
-        if (wrist.y - tip.y) <= (self.cfg.thumb_up_y_margin * scale):
-            return False
-
-        # thumb must be far from wrist (avoid false positives)
-        if (self._d(tip, wrist) / scale) < self.cfg.bravo_thumb_far:
-            return False
-
-        # Other fingers must be curled (and index must NOT be extended)
-        idx_ext = self.finger_extended(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
-        if idx_ext:
-            return False  # explicit block against ONE
-
-        idx_c = self.finger_curled(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
-        mid_c = self.finger_curled(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
-        ring_c = self.finger_curled(lm, RING_TIP, RING_PIP, RING_MCP)
-        pink_c = self.finger_curled(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP)
-
-        if self.cfg.bravo_require_strict_curl:
-            return idx_c and mid_c and ring_c and pink_c
-
-        return (idx_c + mid_c + ring_c + pink_c) >= 3  # type: ignore
+        return _detect_bravo(landmarks)
 
 
 _DEFAULT = HandGestures()

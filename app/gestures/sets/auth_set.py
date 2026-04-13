@@ -1,6 +1,8 @@
 # app/gestures/sets/auth_set.py
 
-AUTH_ALLOWED = {"ONE", "TWO", "THREE", "FOUR", "FIVE", "BRAVO", "THUMBS_DOWN", "FIST", "CLOSED_PALM"}
+from app.gestures.sets.labels import AUTH_LABELS
+
+AUTH_ALLOWED = set(AUTH_LABELS)
 
 # Highest priority first
 AUTH_PRIORITY = [

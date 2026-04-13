@@ -1,0 +1,10 @@
+from app.gestures.sets.labels import PRESENTATION_LABELS
+
+PRESENTATION_ALLOWED = set(PRESENTATION_LABELS)
+
+PRESENTATION_PRIORITY = [
+    "POINT_RIGHT",
+    "POINT_LEFT",
+    "OPEN_PALM",
+    "FIST",
+]

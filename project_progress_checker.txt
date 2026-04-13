@@ -1,24 +1,39 @@
+Virtual Gesture Mouse - Development Progress Checklist
 
-Virtual Gesture Mouse — Development Progress Checklist
+## Global Pipeline Constraint
 
-## Phase 0 — Environment & Toolchain Setup
+**Goal:** Enforce a chronological, implementation-safe ML and runtime pipeline
+
+* [ ] Enforce strict pipeline order: Recording -> Data Validation -> Feature Validation -> Split Enforcement -> Training -> Evaluation -> Runtime
+* [ ] No module may consume artifacts from a future phase
+* [ ] All data must pass validation before training or inference
+* [ ] Training, validation, test, and runtime data flows remain strictly separated
+* [ ] No data leakage is permitted across users, sessions, or dataset splits
+* [ ] Runtime control logic may consume only exported evaluation-approved model artifacts
+
+**Validation rule:**
+No model training, auth sequencing, or OS control work may be marked complete unless all prerequisite checklist items in earlier phases are complete.
+
+---
+
+## Phase 0 - Environment & Toolchain Setup
 
 **Goal:** Deterministic, reproducible development environment
 
-* [ ] Python virtual environment created
+* [x] Python virtual environment created
 * [ ] Exact dependency versions installed (`requirements.txt`)
-* [ ] MediaPipe imports successfully (offline)
+* [x] MediaPipe imports successfully (offline)
 * [ ] Project entrypoint (`run.py`) executes without errors
-* [ ] Initial application state prints as `IDLE_LOCKED`
+* [x] Initial application state prints as `IDLE_LOCKED`
 
 **Exit condition:**
 `python run.py` prints startup message with no runtime errors
 
 ---
-........................Done.................
+........................Partially verified.................
 
 
-## Phase 1 — Architecture & Application Skeleton
+## Phase 1 - Architecture & Application Skeleton
 
 **Goal:** Enforced modular architecture and lifecycle control
 
@@ -36,7 +51,7 @@ Application boots, initializes state machine, and exits cleanly
 
 ---
 
-## Phase 2 — Core Hand Detection (MediaPipe)
+## Phase 2 - Core Hand Detection (MediaPipe)
 
 **Goal:** Reliable single-hand landmark detection across backgrounds
 
@@ -45,7 +60,7 @@ Application boots, initializes state machine, and exits cleanly
 * [x] MediaPipe Hand Landmarker integrated
 * [x] Single-hand constraint enforced
 * [x] Stable landmark output structure defined
-* [x] Graceful handling of “no hand” frames
+* [x] Graceful handling of "no hand" frames
 * [x] Baseline runtime path profiled on CPU
 
 **Exit condition:**
@@ -60,99 +75,245 @@ Implementation status:
 
 ........................Done.................
 
-## Phase 3 — Feature Extraction & Temporal Stability
+## Phase 3 - Feature Extraction & Temporal Stability
 
-**Goal:** Hand-invariant, user-agnostic gesture representation
+**Goal:** Hand-invariant, user-agnostic gesture representation suitable for ML
 
-* [ ] Landmark normalization (scale & translation invariant)
-* [ ] Distance-based and angle-based features extracted
-* [ ] Fixed-length feature vector defined
-* [ ] Temporal smoothing / sliding window implemented
-* [ ] Gesture instability rejection (noise gating)
+* [x] Landmark normalization (scale & translation invariant)
+* [x] Hand-centered coordinate system implemented (palm- or wrist-anchored origin)
+* [x] All downstream features are relative or normalized (no absolute pixel coordinates)
+* [x] Scale normalization applied consistently across all extracted features
+* [x] Feature vectors include normalized landmarks, distances, angles, and ratios
+* [x] Distance-based and angle-based features extracted
+* [x] Fixed-length feature vector defined
+* [x] Feature schema/version contract enforced
+* [x] Low-confidence, incomplete, or partial detections rejected before ML consumption
+* [x] Temporal smoothing / sliding window implemented
+* [x] Gesture instability rejection (noise gating)
+* [x] Background variation does not materially change extracted features
+* [x] Cross-user feature stability verified on unseen hand sizes and positions
+
+**Constraint:**
+Feature extraction must produce user-invariant, translation-invariant, scale-invariant representations and must be validated across varied backgrounds and hand orientations before any model training begins.
 
 **Exit condition:**
-Feature vectors are stable across different users & distances
+Feature vectors are stable, background-robust, and invariant to user, scale, and position, with acceptable robustness to orientation changes for the target gesture set
 
 ---
 
-## Phase 4 — Lightweight ML (Gesture + Auth)
+Implementation status:
+- Done in code: normalized palm-centered landmark features, geometric distances and angles, fixed schema/versioned feature vectors, quality gating, rolling feature-window smoothing, and instability scoring
+- Verified by tests: `tests.test_phase3_normalization`, `tests.test_phase3_geometric_features`, `tests.test_phase3_feature_schema`, `tests.test_phase3_feature_window`, and `tests.test_phase3_validation`
+- Standalone validator available: `tools/validate_phase3.py`
+- Latest validation result: translation/scale invariance pass, background-metadata independence pass, synthetic cross-user stability pass, and bad-input gating pass
+
+........................Done.................
+
+---
+
+## Phase 4 - Lightweight ML (Gesture + Auth)
 
 **Goal:** ML-first gesture recognition with deterministic safety
 
-* [ ] Gesture recording tool implemented
-* [ ] Dataset captured (10 gestures, ≥2 users, multiple backgrounds)
-* [ ] SVM training pipeline implemented
-* [ ] Model evaluated and exported via `joblib`
-* [ ] Runtime model loader implemented
-* [ ] ML prediction confidence thresholds applied
-* [ ] Rule-based fallback & validation enforced
+### Recording & Dataset Preparation
 
-**Exit condition:**
-Gestures recognized correctly in live feed with stable predictions
+* [x] Gesture recording tool implemented
+* [x] Recorder stores gesture labels, user identifiers, session identifiers, and capture context metadata
+* [x] Auth gesture classes and control gesture classes share a consistent label contract
+* [ ] Dataset captured (10 gestures, >=2 users, multiple backgrounds)
+* [ ] No model training begins until Phase 4.1 validation checks pass
+
+Implementation status:
+- Recorder implemented in `tools/record_gestures.py`
+- Saved session JSON already includes gesture label, user id, session id, schema version, quality metrics, feature vectors, and capture-context metadata
+- Recorder now includes a persistent HUD, live gating feedback, accepted/rejected counters, countdown start, AUTO/MANUAL capture modes, backup sound cues, and pre-save confirmation summary
+- Canonical label registry now defines auth, ops, presentation, and unified label contracts from one source
+- Dataset collection protocol defined in `docs/dataset_collection_protocol.md`
+- Tracker generation and readiness validation are automated through `tools/generate_dataset_tracker.py` and `tools/check_collection_readiness.py`
+- Still pending for this phase: actual multi-user, multi-background dataset collection
+
+## Phase 4.1 - SVM Cross-Validation & Data Validation Engine
+
+**Goal:** Reject bad data early and prevent leakage before model fitting
+
+* [x] Validation engine module implemented
+* [ ] Gesture recorder output routed into validation engine as a mandatory gate
+* [x] Sample-level preprocessing enforced for validation inputs
+* [x] Invalid, unstable, or low-quality samples automatically rejected or flagged
+* [x] Feature consistency validation enforced (fixed length, schema match, stable ranges)
+* [x] Outlier detection or explicit outlier filtering policy defined
+* [x] Dataset split enforcement implemented (`train` / `validation` / `test`)
+* [x] No same-user leakage across dataset splits
+* [x] Grouped cross-validation implemented using user-based separation
+* [x] `GroupKFold` or `StratifiedGroupKFold` strategy selected and documented
+* [x] Hyperparameter tuning integrated via `GridSearchCV` or equivalent
+* [x] Best model selected using cross-validation metrics, not ad hoc inspection
+* [x] Validation report generated (dataset-quality and split report; model metrics remain pending)
+* [x] Validated dataset persisted separately from raw recordings
+
+**Constraint:**
+No sample may reach the training pipeline unless it passes validation, split enforcement, and leakage checks.
+
+Implementation status:
+- Validation engine implemented in `app/gestures/validation.py`
+- CLI entrypoint added in `tools/validate_recordings.py`
+- Current validator enforces recorder-payload integrity, Phase 3 schema/version and range checks, quality-threshold revalidation, duplicate rejection, robust MAD-based outlier filtering, grouped CV strategy selection, and leakage-safe user split planning
+- Validated dataset artifacts and validation reports are persisted under `data/datasets`
+- Current split planner intentionally refuses leakage-safe train/validation/test assignment when too few distinct users exist; `U03` is recommended before final split-enforced training work
+- Verified by `tests.test_phase41_validation_engine`
 
 ---
 
-## Phase 5 — Authentication Flow
+### Training, Evaluation & Runtime Integration
+
+* [x] Runtime prediction contract implemented for ML-first inference with rule fallback
+* [x] Runtime classifier wrapper implemented with import-safe missing-model behavior
+* [x] Runtime model loader implemented
+* [x] Runtime inference uses the same feature schema/version as training
+* [x] ML prediction confidence thresholds applied
+* [x] Post-prediction smoothing implemented on the unified runtime output
+* [x] Rule-based fallback & validation enforced
+* [x] Runtime rejects predictions when confidence, stability, or schema checks fail
+* [x] SVM training pipeline implemented
+* [ ] SVM model trained only on validated dataset
+* [ ] Model trained using user-independent features only
+* [ ] Model evaluated and exported via `joblib`
+* [x] Confidence hysteresis implemented to prevent rapid class switching
+* [x] Minimum gesture hold time required before action eligibility
+
+**Exit condition:**
+Gestures are validated, categorized, and recognized with stable, cross-validated performance and no prediction flickering
+
+Implementation status:
+- `app/gestures/classifier.py` now defines the runtime classifier contract and a safe `SVMClassifier` loader that does not break when no model artifact exists yet
+- `app/gestures/suite.py` now prefers ML predictions when a model is available, schema-compatible, confidence-valid, and feature-stable
+- Rule detections remain the fallback path when the model is missing, rejected, low-confidence, or fed unstable features
+- `app/lifecycle/runtime_loop.py` overlay now exposes prediction source and confidence so ML/rule behavior is visible during runtime integration
+- Baseline trainer entrypoint now exists in `app/gestures/training.py` with CLI access through `tools/train_svm.py`; it only accepts validated datasets with `split_status=ok` and writes a candidate model artifact plus training report
+- Runtime export contract now exists: `app/gestures/training.py` can export a versioned `runtime_model_bundle`, and `app/gestures/classifier.py` now rejects `training_candidate` artifacts at runtime
+- Runtime deployment contract now exists: `tools/promote_runtime_model.py` promotes only validated `runtime_model_bundle` artifacts into `models/gesture_svm.joblib` and backs up any previous live model
+- Runtime prediction gating now uses a dedicated hold/switch/release gate in `app/gestures/temporal.py`; `GestureSuiteOut.eligible` is now the action-safe signal and brief ML confidence dips can retain the current ML label via hysteresis
+- Verified by `tests.test_phase4_ml_runtime_integration` and existing Phase 4 suite wiring tests
+
+Immediate implementation track for remaining Phase 4 work:
+* [ ] Train first baseline SVM only after real validated dataset exists
+* [x] Switch Phase 5 auth to consume unified runtime predictions instead of rule-only outputs
+
+---
+
+## Phase 5 - Authentication Flow
 
 **Goal:** Secure, gesture-based activation lifecycle
 
-* [ ] Locked / idle state enforced on startup
-* [ ] Authentication gesture sequence defined
-* [ ] Auth logic separated from control logic
-* [ ] Timeout and retry limits implemented
-* [ ] Unauthorized gestures safely ignored
-* [ ] Transition to active mode only after successful auth
+* [x] Locked / idle state enforced on startup
+* [x] Authentication gesture sequence defined
+* [x] Authentication based on ordered gesture sequence, not user identity
+* [x] Sequence timing constraints enforced
+* [x] Incorrect sequence resets authentication state
+* [x] Auth logic separated from control logic
+* [x] Authentication logic isolated from gesture classification internals
+* [x] Timeout and retry limits implemented
+* [x] Unauthorized gestures safely ignored
+* [x] ML confidence threshold required for each gesture in the auth sequence
+* [x] Transition to active mode only after successful auth
+
+**Constraint:**
+The authentication system must remain fully user-independent and may not rely on identity-based learning.
 
 **Exit condition:**
-System ignores all control gestures until authenticated
+System ignores all control gestures until an ordered, validated authentication sequence succeeds
 
 ---
 
-## Phase 6 — Mouse & Presentation Control
+Implementation status:
+- `app/security/auth.py` now implements an ordered gesture sequence with timeout, wrong-gesture reset, and explicit cancel/reset gesture handling
+- `app/modes/router.py` now owns auth state transitions, and `app/lifecycle/runtime_loop.py` delegates lock/auth/general routing through it
+- Auth now enforces retry limits with temporary lockout after repeated wrong/timeout failures
+- Sleep/lock re-entry semantics are now defined in `ModeRouter`: active -> sleep, sleep -> auth, and lock clears auth progress
+- Auth consumes unified `eligible` gesture edges, not raw detector output, so it stays compatible with ML-first runtime gating
+
+## Phase 6 - Mouse & Presentation Control
 
 **Goal:** Safe OS interaction with app-aware modes
 
+Implementation status:
+- General-mode dry run contract now exists: `app/control/actions.py` defines non-OS `ActionIntent`, `app/modes/general.py` returns explicit dry-run/no-op intents, and `app/lifecycle/runtime_loop.py` surfaces them in overlay text
+- `PINCH_INDEX` primary interaction dry run now exists: stateful candidate -> drag -> click-pending -> single/double-click resolution using abstract cursor-space movement, decoupled from the final cursor pose
+- `FIST` clutch dry run now exists above primary interaction: it freezes General Mode ownership, cancels lower-priority primary state, and suppresses same-frame re-entry on release
+- `PINCH_MIDDLE` secondary interaction dry run now exists as a sibling release-only controller: valid release -> one right click, excessive drift/hand loss/clutch -> cancel
+- `PINCH_IM` scroll-mode dry run now exists as a mode controller: edge-triggered toggle, dead-zone entry, deterministic axis lock/reset, and suppression of primary/secondary while active
+- General Mode now has a provisional-but-isolated cursor policy layer plus non-OS cursor preview controller beneath the higher-priority subsystems
+- Safe OS execution seam now exists behind the dry-run contract; live cursor + primary click/drag/double-click + right click + scroll now translate from dry-run outputs through one gated adapter
+- Presentation mode now runs on the same dry-run -> safety -> execution architecture: `WindowWatch` provides conservative foreground-app context, `app/modes/presentation.py` resolves presentation intents, and the executor translates approved presentation actions into key presses when enabled
+- Cursor pose choice remains intentionally provisional and isolated; live OS execution now uses an explicit `dry_run`/`live` profile, per-subsystem toggles, and runtime safety suppression, and stays disabled by default
+
 ### General Mode
 
-* [ ] Precise cursor movement mapping
-* [ ] Click, drag, scroll gestures stabilized
-* [ ] Dead-zone and clutch gesture implemented
-* [ ] Accidental click prevention
+* [~] Precise cursor movement mapping implemented in dry run with isolated provisional policy
+* [~] Primary click/drag/double-click subsystem implemented in dry run
+* [~] Right-click subsystem implemented in dry run
+* [~] Scroll subsystem implemented in dry run
+* [~] Clutch subsystem implemented in dry run
+* [~] Live cursor execution path implemented behind gated OS adapter
+* [~] Live primary click/drag/double-click execution implemented behind gated OS adapter
+* [~] Live right-click execution implemented behind gated OS adapter
+* [~] Live scroll execution implemented behind gated OS adapter
+* [x] Accidental click prevention guards added at the runtime safety seam
+* [ ] Actions trigger only after stabilized predictions
+* [x] Control outputs disabled on unstable prediction / hand-loss conditions before executor translation
 
 ### Presentation Mode (App-Based)
 
-* [ ] Presentation apps detected (foreground/window watch)
-* [ ] Automatic switch to presentation mode when app opens
-* [ ] Automatic exit when app closes
-* [ ] Slide navigation gestures mapped
-* [ ] General mode resumes seamlessly
+* [x] Presentation apps detected (foreground/window watch)
+* [x] Automatic switch to presentation mode when app opens
+* [x] Automatic exit when app closes
+* [x] Slide navigation gestures mapped
+* [x] General mode resumes seamlessly
 
 ### Exit & Sleep
 
 * [ ] Gesture-based exit implemented
 * [ ] Hotkey-based exit implemented
 * [ ] Sleep / idle without process termination
+* [ ] Manual override or fallback gesture defined
 
 **Exit condition:**
-Mouse feels natural and presentation control works only inside presentation apps
+Mouse feels natural, presentation control works only inside presentation apps, and unsafe predictions never trigger OS actions
 
 ---
 
-## Phase 7 — Polishing, Testing & Viva Readiness
+## Phase 7 - Polishing, Testing & Viva Readiness
 
 **Goal:** Demonstrable, defendable academic system
 
 * [ ] Two-user testing completed
+* [ ] Cross-user generalization tested on unseen users
 * [ ] Multiple lighting & background tests passed
+* [ ] Background variation testing performed (plain, cluttered, mixed lighting)
 * [ ] False-positive rate acceptably low
 * [ ] FPS stable under continuous use (target: `>= 25 FPS` on target CPU)
+* [ ] End-to-end latency measured (`capture -> prediction -> action`)
+* [ ] Runtime latency target defined and verified on target hardware
 * [ ] Overlay UI clean and informative
+* [ ] Failure modes handled (no hand, low confidence, misclassification, unstable prediction)
+* [ ] System safely falls back to idle or no-action state under uncertainty
 * [ ] All modules documented
 * [ ] Known limitations listed
 * [ ] Demo script prepared
 
 **Exit condition:**
-System runs reliably for live demonstration without supervision
+System runs reliably for live demonstration without supervision and degrades safely under uncertainty
+
+---
+
+## Final Validation Constraints
+
+* [ ] The system remains fully user-independent
+* [ ] Feature extraction is validated across varied backgrounds and does not depend on background-specific cues
+* [ ] SVM training relies only on validated, normalized, invariant features
+* [ ] Cross-validation and hyperparameter search are integral to model selection
+* [ ] Runtime predictions are stabilized before triggering system actions
+* [ ] Auth, training, evaluation, and runtime paths remain logically separated
 
 ---
 
@@ -163,5 +324,3 @@ System runs reliably for live demonstration without supervision
 * [ ] Background robustness explicitly addressed
 * [ ] Offline operation guaranteed
 * [ ] Safety and usability considerations documented
-
- 

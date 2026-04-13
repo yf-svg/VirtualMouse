@@ -102,6 +102,8 @@ class FeatureWindowTests(unittest.TestCase):
             l_gesture=False,
             bravo=False,
             thumbs_down=False,
+            point_right=False,
+            point_left=False,
         )
 
         with patch("app.gestures.engine.assess_hand_input_quality", return_value=quality):

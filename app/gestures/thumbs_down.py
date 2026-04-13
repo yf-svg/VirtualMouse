@@ -30,6 +30,7 @@ from app.gestures.features import (
     get_landmarks,
     hand_scale,
     min_thumb_tip_distance_to_fingers,
+    palm_width,
     thumb_is_extended,
     thumb_metrics,
 )
@@ -42,13 +43,16 @@ class ThumbsDownCfg:
 
     thumb_tip_to_palm: float = 0.62
     thumb_tip_to_wrist: float = 0.82
-    thumb_vertical_ratio: float = 1.05
+    thumb_vertical_ratio: float = 0.9
     thumb_below_wrist: float = 0.02
     thumb_below_knuckles: float = 0.04
     thumb_pinch_exclusion: float = 0.24
-    compact_tip_to_palm: float = 0.88
-    compact_curl_ratio: float = 1.10
-    min_curled: int = 4
+    compact_tip_to_palm: float = 0.99
+    compact_curl_ratio: float = 1.12
+    min_curled: int = 3
+    max_extended: int = 0
+    max_tip_cluster_width_ratio: float = 1.15
+    max_tip_cluster_height_ratio: float = 0.85
 
 
 class ThumbsDownDetector:
@@ -69,8 +73,21 @@ class ThumbsDownDetector:
             or (
                 metrics.tip_to_palm <= self.cfg.compact_tip_to_palm
                 and metrics.curl_ratio <= self.cfg.compact_curl_ratio
-                and lm[tip].y > lm[pip].y
             )
+        )
+
+    def _non_thumb_tip_cluster_ok(self, lm) -> bool:
+        palm = max(
+            palm_width(lm, use_3d=self.cfg.use_3d, min_scale=self.cfg.min_scale),
+            self.cfg.min_scale,
+        )
+        tip_x = [lm[INDEX_TIP].x, lm[MIDDLE_TIP].x, lm[RING_TIP].x, lm[PINKY_TIP].x]
+        tip_y = [lm[INDEX_TIP].y, lm[MIDDLE_TIP].y, lm[RING_TIP].y, lm[PINKY_TIP].y]
+        width_ratio = (max(tip_x) - min(tip_x)) / palm
+        height_ratio = (max(tip_y) - min(tip_y)) / palm
+        return (
+            width_ratio <= self.cfg.max_tip_cluster_width_ratio
+            and height_ratio <= self.cfg.max_tip_cluster_height_ratio
         )
 
     def detect(self, landmarks: Any) -> bool:
@@ -105,13 +122,25 @@ class ThumbsDownDetector:
         if min_thumb_tip_distance_to_fingers(lm, use_3d=self.cfg.use_3d, scale=scale) < self.cfg.thumb_pinch_exclusion:
             return False
 
+        fingers = [
+            finger_metrics(lm, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP, use_3d=self.cfg.use_3d, scale=scale),
+            finger_metrics(lm, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP, use_3d=self.cfg.use_3d, scale=scale),
+            finger_metrics(lm, RING_MCP, RING_PIP, RING_DIP, RING_TIP, use_3d=self.cfg.use_3d, scale=scale),
+            finger_metrics(lm, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP, use_3d=self.cfg.use_3d, scale=scale),
+        ]
+        if sum(1 for metrics in fingers if finger_is_extended(metrics)) > self.cfg.max_extended:
+            return False
+
         compact = [
             self._finger_compact(lm, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP, scale=scale),
             self._finger_compact(lm, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP, scale=scale),
             self._finger_compact(lm, RING_MCP, RING_PIP, RING_DIP, RING_TIP, scale=scale),
             self._finger_compact(lm, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP, scale=scale),
         ]
-        return sum(1 for v in compact if v) >= self.cfg.min_curled
+        return (
+            sum(1 for v in compact if v) >= self.cfg.min_curled
+            and self._non_thumb_tip_cluster_ok(lm)
+        )
 
 
 _DEFAULT = ThumbsDownDetector()

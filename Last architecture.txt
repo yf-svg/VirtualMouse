@@ -1,0 +1,73 @@
+Last architecture
+
+
+virtual-gesture-mouse/
+├── requirements.txt
+├── README.md
+├── run.py
+
+├── models/
+│   └── .gitkeep
+
+├── data/
+│   ├── recordings/
+│   │   └── .gitkeep
+│   └── datasets/
+│       └── .gitkeep
+
+├── app/
+│   ├── __init__.py
+│   ├── config.py
+│   ├── constants.py
+
+│   ├── lifecycle/
+│   │   ├── __init__.py
+│   │   ├── app.py
+│   │   ├── state_machine.py
+│   │   └── runtime_loop.py
+
+│   ├── perception/
+│   │   ├── __init__.py
+│   │   ├── camera.py
+│   │   ├── preprocessing.py
+│   │   └── hand_tracker.py
+
+│   ├── gestures/
+│   │   ├── __init__.py
+│   │   ├── features.py
+│   │   ├── classifier.py
+│   │   ├── temporal.py
+│   │   ├── rules.py
+│   │   └── engine.py
+
+│   ├── control/
+│   │   ├── __init__.py
+│   │   ├── mouse.py
+│   │   ├── actions.py
+│   │   └── window_watch.py
+
+│   ├── modes/
+│   │   ├── __init__.py
+│   │   ├── general.py
+│   │   ├── presentation.py
+│   │   └── router.py
+
+│   ├── security/
+│   │   ├── __init__.py
+│   │   └── auth.py
+
+│   ├── ui/
+│   │   ├── __init__.py
+│   │   └── overlay.py
+
+│   └── utils/
+│       ├── __init__.py
+│       ├── logger.py
+│       ├── fps.py
+│       ├── timers.py
+│       └── errors.py
+
+└── tools/
+    ├── record_gestures.py
+    ├── train_svm.py
+    └── evaluate_model.py

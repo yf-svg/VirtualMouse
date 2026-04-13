@@ -24,6 +24,28 @@ class TemporalOut:
 
 
 @dataclass
+class PredictionGateCfg:
+    enter_confirm: int = 1
+    switch_confirm: int = 2
+    release_confirm: int = 2
+    eligible_hold: int = 2
+    ml_hysteresis_delta: float = 0.10
+
+
+@dataclass
+class PredictionGateOut:
+    stable: Optional[str]
+    eligible: Optional[str]
+    down: Optional[str]
+    up: Optional[str]
+    changed: bool
+    hold_frames: int
+    pending_label: Optional[str]
+    pending_frames: int
+    reason: str
+
+
+@dataclass
 class FeatureTemporalCfg:
     window: int = 5
     min_frames: int = 3
@@ -114,6 +136,129 @@ class TemporalFilter:
                 up = prev
 
         return TemporalOut(stable=self._stable, down=down, up=up, changed=changed)
+
+
+class PredictionGate:
+    """
+    Runtime gate for the unified prediction stream.
+
+    Responsibilities:
+      - debounce new labels before they become stable
+      - require extra persistence before a stable label becomes action-eligible
+      - resist rapid release/switch flicker
+    """
+
+    def __init__(self, cfg: PredictionGateCfg | None = None):
+        self.cfg = cfg or PredictionGateCfg()
+        self.reset()
+
+    @property
+    def stable_label(self) -> Optional[str]:
+        return self._stable
+
+    @property
+    def stable_source(self) -> Optional[str]:
+        return self._stable_source
+
+    @property
+    def eligible_label(self) -> Optional[str]:
+        return self._stable if self._stable is not None and self._stable_age >= self.cfg.eligible_hold else None
+
+    def reset(self) -> None:
+        self._stable: Optional[str] = None
+        self._stable_source: Optional[str] = None
+        self._stable_age: int = 0
+        self._pending_label: Optional[str] = None
+        self._pending_source: Optional[str] = None
+        self._pending_count: int = 0
+
+    def _begin_pending(self, label: Optional[str], source: str) -> None:
+        self._pending_label = label
+        self._pending_source = source
+        self._pending_count = 1
+
+    def _clear_pending(self) -> None:
+        self._pending_label = None
+        self._pending_source = None
+        self._pending_count = 0
+
+    def update(self, chosen: Optional[str], *, source: str) -> PredictionGateOut:
+        prev_eligible = self.eligible_label
+        prev_stable = self._stable
+        reason = "steady_none"
+        changed = False
+
+        if chosen == self._stable:
+            if chosen is not None:
+                self._stable_age += 1
+                self._stable_source = source
+                reason = "stable_match"
+            else:
+                reason = "steady_none"
+            self._clear_pending()
+        elif self._stable is None:
+            if chosen is None:
+                self._clear_pending()
+                reason = "steady_none"
+            else:
+                if chosen == self._pending_label and source == self._pending_source:
+                    self._pending_count += 1
+                else:
+                    self._begin_pending(chosen, source)
+                reason = f"enter_pending:{self._pending_count}"
+                if self._pending_count >= self.cfg.enter_confirm:
+                    self._stable = chosen
+                    self._stable_source = source
+                    self._stable_age = self._pending_count
+                    self._clear_pending()
+                    changed = True
+                    reason = "entered_stable"
+        else:
+            if chosen == self._pending_label and source == self._pending_source:
+                self._pending_count += 1
+            else:
+                self._begin_pending(chosen, source)
+
+            if chosen is None:
+                reason = f"release_pending:{self._pending_count}"
+                if self._pending_count >= self.cfg.release_confirm:
+                    self._stable = None
+                    self._stable_source = None
+                    self._stable_age = 0
+                    self._clear_pending()
+                    changed = True
+                    reason = "released"
+            else:
+                reason = f"switch_pending:{self._pending_count}"
+                if self._pending_count >= self.cfg.switch_confirm:
+                    self._stable = chosen
+                    self._stable_source = source
+                    self._stable_age = self._pending_count
+                    self._clear_pending()
+                    changed = True
+                    reason = "switched"
+
+        eligible = self.eligible_label
+        down = eligible if prev_eligible is None and eligible is not None else None
+        up = prev_eligible if prev_eligible is not None and eligible is None else None
+        if prev_eligible is not None and eligible is not None and prev_eligible != eligible:
+            down = eligible
+            up = prev_eligible
+
+        if self._stable is not None and eligible is None:
+            reason = f"{reason}|hold_pending:{self._stable_age}/{self.cfg.eligible_hold}"
+
+        return PredictionGateOut(
+            stable=self._stable,
+            eligible=eligible,
+            down=down,
+            up=up,
+            changed=changed or (prev_stable != self._stable),
+            hold_frames=self._stable_age,
+            pending_label=self._pending_label,
+            pending_frames=self._pending_count,
+            reason=reason,
+        )
 
 
 class FeatureWindow:
