@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import dataclass
 
 from app.config import ExecutionConfig, PresentationContextConfig
 from app.constants import AppState
@@ -14,8 +15,7 @@ from app.control.window_watch import (
     StubForegroundWindowBackend,
     WindowWatch,
 )
-from app.gestures.suite import GestureSuiteOut
-from app.lifecycle.runtime_loop import _format_execution_policy_status, _format_presentation_context
+from app.lifecycle.runtime_status import _format_execution_policy_status, _format_presentation_context
 from app.modes.presentation import map_gesture_to_action as map_presentation_action
 from app.modes.presentation import resolve_presentation_action
 from app.modes.router import ModeRouter
@@ -23,7 +23,7 @@ from app.security.auth import GestureAuth, GestureAuthCfg
 
 
 def _suite_out(*, eligible: str | None, feature_reason: str = "ok") -> GestureSuiteOut:
-    return GestureSuiteOut(
+    return _SuiteOut(
         chosen=eligible,
         stable=eligible,
         eligible=eligible,
@@ -40,6 +40,36 @@ def _suite_out(*, eligible: str | None, feature_reason: str = "ok") -> GestureSu
         hold_frames=2,
         gate_reason="stable_match",
     )
+
+
+@dataclass
+class _SuiteOut:
+    chosen: str | None
+    stable: str | None
+    eligible: str | None
+    candidates: set[str]
+    reason: str
+    down: str | None
+    up: str | None
+    source: str
+    confidence: float | None
+    rule_chosen: str | None
+    ml_chosen: str | None
+    ml_reason: str
+    feature_reason: str
+    hold_frames: int
+    gate_reason: str
+
+
+def _policy_ctx(executor):
+    return type(
+        "Ctx",
+        (),
+        {
+            "executor": executor,
+            "override_policy": type("OverridePolicy", (), {"status_text": lambda self: "EXEC:INHERIT|ROUTE:AUTO"})(),
+        },
+    )()
 
 
 class Phase6PresentationRouterTests(unittest.TestCase):
@@ -123,6 +153,7 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         router = ModeRouter(auth=GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"))))
         router.route_auth_edge("ONE", now=1.0)
         router.route_auth_edge("TWO", now=2.0)
+        router.route_auth_edge("BRAVO", now=3.0)
 
         out = router.sync_presentation_permission(True)
 
@@ -134,6 +165,7 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         router = ModeRouter(auth=GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"))))
         router.route_auth_edge("ONE", now=1.0)
         router.route_auth_edge("TWO", now=2.0)
+        router.route_auth_edge("BRAVO", now=3.0)
         router.sync_presentation_permission(True)
 
         out = router.sync_presentation_permission(False)
@@ -298,11 +330,12 @@ class Phase6PresentationRouterTests(unittest.TestCase):
 
         ctx_text = _format_presentation_context(context)
         policy_text = _format_execution_policy_status(
-            type("Ctx", (), {"executor": executor})(),
+            _policy_ctx(executor),
             "ok",
         )
 
         self.assertIn("PCTX:POWERPOINT:powerpnt.exe", ctx_text)
+        self.assertIn("OVR:EXEC:INHERIT|ROUTE:AUTO", policy_text)
         self.assertIn("XPOL:LIVE:prs", policy_text)
 
 

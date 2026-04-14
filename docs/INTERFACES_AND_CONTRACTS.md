@@ -47,6 +47,10 @@
 - out: `RouteOut(...)`
 - invariant: sleep is only entered from active states; wake from sleep returns to auth path; lock always clears auth progress
 
+### `ModeRouter.request_exit(source=..., reason=...)`
+- out: `RouteOut(...)`
+- invariant: runtime/operator shutdown must mark `EXITING` only after neutralization; router owns the final state transition rather than ad hoc loop breaks
+
 ### `ModeRouter.sync_presentation_permission(allowed)`
 - out: `RouteOut(...)`
 - invariant: only `ACTIVE_GENERAL -> ACTIVE_PRESENTATION` on allow and `ACTIVE_PRESENTATION -> ACTIVE_GENERAL` on deny; locked/auth states ignore presentation permission
@@ -137,6 +141,26 @@
   - presentation actions must be suppressed on unstable features, hand loss, or untrusted context
   - no app/context heuristic may bypass dry-run action resolution
 
+### `resolve_operator_override_policy(override_cfg, execution_cfg)`
+- out: `ResolvedOperatorOverridePolicy(valid, reason, execution_override, routing_override, effective_execution)`
+- invariant:
+  - centralized override policy must layer onto execution config + router permission only
+  - invalid/ambiguous override config must fail safe to conservative execution/routing
+  - override policy may not bypass dry-run ownership or execution safety
+
+### `OperatorLifecycleController.request_from_key(...)` / `request_from_suite_out(...)`
+- out: `ExitRequest(...) | None`
+- invariant:
+  - manual exit is explicit and auditable
+  - gesture exit must consume eligible edge output only and stay localized to active operator states
+  - lifecycle exit policy stays separate from gesture/action controllers
+
+### `neutralize_runtime_ownership(ctx, reason=...)`
+- out: `RuntimeNeutralizationReport(...)`
+- invariant:
+  - shutdown/exit must release held mouse state, clear keyboard holds, and reset controller ownership before router exit
+  - neutralization must be safe to call repeatedly
+
 ### `resolve_presentation_action(gesture_label, context)`
 - out: `PresentationModeOut(intent, context)`
 - invariant:
@@ -199,6 +223,8 @@
 - `app/modes/presentation.py` -> presentation resolver now exists; `OPEN_PALM` start and `FIST` exit remain provisional/localized until explicitly re-approved
 - `app/control/actions.py` -> dry-run contract only
 - `app/control/execution.py` / `mouse.py` -> live General + Presentation execution seams exist; explicit `dry_run`/`live` policy + runtime safety gate keep them fail-safe by default
+- `app/lifecycle/operator_lifecycle.py` -> manual exit is explicit; gesture exit is localized to `THUMBS_DOWN` eligible edges in active operator states and remains provisional
+- `app/lifecycle/operator_policy.py` -> centralized execution/routing override policy exists; invalid overrides fail safe to conservative routing and non-live execution
 
 ## MUST NOT SILENTLY CHANGE
 - `phase3.v2` feature contract

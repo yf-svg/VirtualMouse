@@ -69,6 +69,20 @@ class ExecutionSafetyConfig:
 
 
 @dataclass(frozen=True)
+class OperatorLifecycleConfig:
+    manual_exit_keys: tuple[str, ...] = ("ESC", "Q")
+    enable_gesture_exit: bool = True
+    gesture_exit_label: str = "THUMBS_DOWN"
+    gesture_exit_min_hold_frames: int = 2
+
+
+@dataclass(frozen=True)
+class OperatorOverrideConfig:
+    execution_override: str = "inherit"
+    routing_override: str = "auto"
+
+
+@dataclass(frozen=True)
 class PresentationContextConfig:
     powerpoint_processes: tuple[str, ...] = ("powerpnt.exe",)
     browser_processes: tuple[str, ...] = ("chrome.exe", "msedge.exe", "firefox.exe", "brave.exe")
@@ -112,6 +126,8 @@ class AppConfig:
     cursor_preview: CursorPreviewConfig = field(default_factory=CursorPreviewConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     execution_safety: ExecutionSafetyConfig = field(default_factory=ExecutionSafetyConfig)
+    operator_lifecycle: OperatorLifecycleConfig = field(default_factory=OperatorLifecycleConfig)
+    operator_override: OperatorOverrideConfig = field(default_factory=OperatorOverrideConfig)
     presentation_context: PresentationContextConfig = field(default_factory=PresentationContextConfig)
 
 

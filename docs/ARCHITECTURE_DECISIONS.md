@@ -26,6 +26,8 @@
 - ADR-021 | General live execution | primary/secondary/scroll live actions must be translated only from dry-run subsystem outputs; drag cursor motion reuses the primary subsystem cursor-space seam rather than bypassing controllers
 - ADR-022 | Execution safety | live OS execution defaults to `dry_run`; `live` mode must be explicit and centralized, and runtime safety suppression must block unsafe actions before they reach the executor
 - ADR-023 | Presentation mode | presentation actions must use a dedicated mode-aware resolver plus conservative foreground-app context detection; unresolved `OPEN_PALM`/`FIST` semantics stay localized and provisional rather than leaking into General Mode
+- ADR-024 | Operator lifecycle | runtime exit must flow through an explicit lifecycle seam that neutralizes held OS/controller state before entering `EXITING`; manual exit remains primary and gesture exit stays localized/provisional
+- ADR-025 | Override policy | execution/routing overrides must be centralized, fail-safe, and layered into the existing router + executor seams; overrides may tighten behavior but must not bypass dry-run ownership or execution safety gating
 
 ## REJECTED
 - R-001 | pure rule runtime as final architecture

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import dataclass
 
 from app.config import (
     ClutchInteractionConfig,
@@ -21,13 +22,42 @@ from app.control.mouse import NoOpMouseBackend, ScreenPoint
 from app.control.primary_interaction import PrimaryInteractionController
 from app.control.scroll_mode import ScrollModeController
 from app.control.secondary_interaction import SecondaryInteractionController
-from app.gestures.suite import GestureSuiteOut
-from app.lifecycle.runtime_loop import _format_execution_policy_status
+from app.lifecycle.runtime_status import _format_execution_policy_status
 from app.modes.general import resolve_general_action
 
 
 def pt(x: float, y: float) -> CursorPoint:
     return CursorPoint(x=x, y=y)
+
+
+def _policy_ctx(executor):
+    return type(
+        "Ctx",
+        (),
+        {
+            "executor": executor,
+            "override_policy": type("OverridePolicy", (), {"status_text": lambda self: "EXEC:INHERIT|ROUTE:AUTO"})(),
+        },
+    )()
+
+
+@dataclass
+class _SuiteOut:
+    chosen: str | None
+    stable: str | None
+    eligible: str | None
+    candidates: set[str]
+    reason: str
+    down: str | None
+    up: str | None
+    source: str
+    confidence: float | None
+    rule_chosen: str | None
+    ml_chosen: str | None
+    ml_reason: str
+    feature_reason: str
+    hold_frames: int
+    gate_reason: str
 
 
 class Phase6OsExecutionTests(unittest.TestCase):
@@ -104,8 +134,8 @@ class Phase6OsExecutionTests(unittest.TestCase):
         eligible: str | None,
         feature_reason: str = "ok",
         gate_reason: str = "stable_match",
-    ) -> GestureSuiteOut:
-        return GestureSuiteOut(
+    ) -> _SuiteOut:
+        return _SuiteOut(
             chosen=eligible,
             stable=stable,
             eligible=eligible,
@@ -549,10 +579,11 @@ class Phase6OsExecutionTests(unittest.TestCase):
         )
 
         status = _format_execution_policy_status(
-            type("Ctx", (), {"executor": executor})(),
+            _policy_ctx(executor),
             safety.summary(),
         )
 
+        self.assertIn("OVR:EXEC:INHERIT|ROUTE:AUTO", status)
         self.assertIn("XPOL:LIVE:cur,pri,sec,scr", status)
         self.assertIn("SAFE:ok", status)
 

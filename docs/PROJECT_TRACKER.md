@@ -49,7 +49,7 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 - tracker must be updated after every implementation step
 
 ## GESTURE MAP
-- Auth-only: `ONE TWO THREE FOUR FIVE`
+- Auth-only default: `ONE TWO THREE`
 - Ops runtime: `FIST CLOSED_PALM OPEN_PALM PEACE_SIGN L BRAVO THUMBS_DOWN POINT_RIGHT POINT_LEFT PINCH_INDEX PINCH_MIDDLE PINCH_RING PINCH_PINKY PINCH_IM PINCH_IMRP`
 - Presentation subset: `POINT_RIGHT POINT_LEFT OPEN_PALM FIST`
 - Action map: not implemented yet
@@ -67,6 +67,7 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 - NOTE: runtime now exposes `stable` + `eligible`; `eligible` is the future action-safe signal
 - NOTE: `ModeRouter` now owns auth state transitions; runtime loop delegates auth policy
 - NOTE: auth now enforces retry limits with temporary lockout after repeated failures/timeouts
+- NOTE: auth now uses a strict runtime auth-set subset only (`ONE..THREE`, `BRAVO`, `FIST`, `THUMBS_DOWN`); `BRAVO` explicitly approves, `FIST` resets, and `THUMBS_DOWN` steps back one gesture
 - NOTE: sleep->auth wake and relock semantics now live in `ModeRouter`
 - NOTE: presentation mode is now app-gated through `WindowWatch` and router permission sync
 - NOTE: general-mode dry run now includes a stateful `PINCH_INDEX` primary interaction path using abstract cursor-space movement; cursor pose remains decoupled/provisional
@@ -79,14 +80,16 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 - NOTE: presentation mode now resolves `POINT_RIGHT/POINT_LEFT/OPEN_PALM/FIST` through a dedicated policy and uses the same safety + execution seams as General Mode
 - NOTE: `WindowWatch` now performs conservative foreground-app detection for PowerPoint, presentation-like browser tabs, and common PDF viewers; ambiguous context fails safe to no presentation action
 - NOTE: `OPEN_PALM -> PRESENT_START` and `FIST -> PRESENT_EXIT` are now implemented as localized provisional presentation semantics because the repo had the reserved gesture subset but not the final action detail
+- NOTE: runtime/operator exit now uses an explicit lifecycle seam; manual `ESC/Q` exit and localized `THUMBS_DOWN` gesture exit both neutralize live/controller ownership before `EXITING`
+- NOTE: centralized operator override policy now layers execution-profile and presentation-routing overrides onto the existing executor/router seams; invalid overrides fail safe to dry-run/auto-routing behavior
 - BUG: validation not auto-run after recording save
 - BUG: FPS target not yet met
 - RISK: presentation context detection is intentionally conservative; unsupported apps/titles will fail safe to General Mode routing or no action
 
 ## NEXT STEP
-1. Finish remaining Phase 6 lifecycle product items: gesture/manual exit path and explicit operator override policy
-2. Phase 7 focus: FPS, latency, and end-to-end runtime polish
-3. Data-blocked path: train/export/promote first real runtime bundle
+1. Phase 7 focus: FPS, latency, and end-to-end runtime polish
+2. Data-blocked path: train/export/promote first real runtime bundle
+3. Optional future operator tooling: expose override policy through explicit UI/CLI without changing the runtime seams
 
 ## AGENT RULES
 - Read: `PROJECT_TRACKER.md` -> `ARCHITECTURE_DECISIONS.md` -> `INTERFACES_AND_CONTRACTS.md` -> `OPEN_ISSUES.md` -> `SESSION_LOG.md`

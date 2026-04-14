@@ -35,6 +35,13 @@ class ExecutionBatchReport:
 
 
 @dataclass(frozen=True)
+class ExecutionNeutralizationReport:
+    reason: str
+    released_primary_drag: bool
+    keyboard_release_sent: bool
+
+
+@dataclass(frozen=True)
 class ResolvedExecutionPolicy:
     mode: str
     valid: bool
@@ -96,6 +103,20 @@ class OSActionExecutor:
 
     def policy_status_text(self) -> str:
         return self.policy.status_text()
+
+    def neutralize(self, *, reason: str) -> ExecutionNeutralizationReport:
+        released_primary_drag = False
+        if self._primary_drag_down:
+            self.mouse_backend.left_button_up()
+            self._primary_drag_down = False
+            released_primary_drag = True
+        self._last_cursor_target = None
+        self.keyboard_backend.release_all()
+        return ExecutionNeutralizationReport(
+            reason=reason,
+            released_primary_drag=released_primary_drag,
+            keyboard_release_sent=True,
+        )
 
     def apply_general_mode(
         self,

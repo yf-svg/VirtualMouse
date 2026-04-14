@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.constants import AppState
 from app.lifecycle.state_machine import StateMachine
-from app.security.auth import GestureAuth, GestureAuthOut
+from app.security.auth import GestureAuth, GestureAuthCfg, GestureAuthOut
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,14 @@ class ModeRouter:
     def state(self) -> AppState:
         return self._sm.state
 
+    @property
+    def auth_cfg(self) -> GestureAuthCfg:
+        return self._auth.cfg
+
+    @property
+    def current_auth_expected_next(self) -> str | None:
+        return self._auth.current_expected_next
+
     @staticmethod
     def _format_auth_progress(auth_out: GestureAuthOut) -> str:
         if auth_out.status == "locked_out":
@@ -44,8 +52,8 @@ class ModeRouter:
             authenticated=False,
             status=status,
             matched_steps=0,
-            total_steps=len(self._auth.cfg.sequence),
-            expected_next=self._auth.cfg.sequence[0],
+            total_steps=self._auth.total_steps,
+            expected_next=self._auth.expected_first,
             consumed_label=None,
             failed_attempts=0,
             max_failures=self._auth.cfg.max_failures,
@@ -57,14 +65,16 @@ class ModeRouter:
             return "auth"
         if self.state == AppState.SLEEP:
             return "sleep"
+        if self.state == AppState.EXITING:
+            return "exit"
         return "ops"
 
     def route_auth_edge(self, gesture_label: str | None, *, now: float | None = None) -> RouteOut:
         auth_out = self._auth.update(gesture_label, now=time.monotonic() if now is None else now)
 
-        if auth_out.status in {"started", "progress"} and self.state == AppState.IDLE_LOCKED:
+        if auth_out.status in {"started", "progress", "step_back"} and self.state == AppState.IDLE_LOCKED:
             self._sm.set_state(AppState.AUTHENTICATING)
-        elif auth_out.status in {"reset_wrong", "reset_timeout", "reset_cancel", "locked_out"} and self.state == AppState.AUTHENTICATING:
+        elif auth_out.status == "locked_out" and self.state == AppState.AUTHENTICATING:
             self._sm.set_state(AppState.IDLE_LOCKED)
         elif auth_out.status == "success":
             self._sm.set_state(AppState.ACTIVE_GENERAL)
@@ -124,6 +134,18 @@ class ModeRouter:
             suite_key=self._suite_key(),
             auth_status=auth_out.status,
             auth_progress_text=self._format_auth_progress(auth_out),
+            auth_out=auth_out,
+        )
+
+    def request_exit(self, *, source: str = "operator", reason: str = "operator_exit") -> RouteOut:
+        if self.state != AppState.EXITING and self._sm.can_transition(AppState.EXITING):
+            self._sm.set_state(AppState.EXITING)
+        auth_out = self._idle_auth_out(status="exiting")
+        return RouteOut(
+            state=self.state,
+            suite_key=self._suite_key(),
+            auth_status=auth_out.status,
+            auth_progress_text=f"Exiting ({source}:{reason})",
             auth_out=auth_out,
         )
 

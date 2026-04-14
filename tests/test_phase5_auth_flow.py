@@ -1,66 +1,28 @@
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 
-from app.gestures.disambiguate import Decision
-from app.gestures.features import FEATURE_DIMENSION, FEATURE_SCHEMA_VERSION, FeatureVector
 from app.gestures.sets.auth_set import AUTH_ALLOWED
-from app.gestures.suite import GestureSuite
-from app.gestures.temporal import FeatureTemporalOut
 from app.security.auth import GestureAuth, GestureAuthCfg
 
 
-def _feature_vector() -> FeatureVector:
-    return FeatureVector(
-        values=tuple(0.01 * idx for idx in range(FEATURE_DIMENSION)),
-        schema_version=FEATURE_SCHEMA_VERSION,
-    )
-
-
-def _feature_temporal() -> FeatureTemporalOut:
-    vector = _feature_vector()
-    return FeatureTemporalOut(
-        smoothed=vector,
-        ready=True,
-        window_size=5,
-        schema_version=vector.schema_version,
-        instability_score=0.01,
-        pairwise_delta_median=0.01,
-        latest_deviation=0.01,
-        passed=True,
-        reason="ok",
-    )
-
-
-class _FakeEngine:
-    def __init__(self, label: str | None):
-        self.label = label
-
-    def process(self, hand_landmarks):
-        return SimpleNamespace(
-            decision=Decision(active=self.label, candidates={self.label} if self.label else set(), reason="single" if self.label else "none"),
-            candidates={self.label} if self.label else set(),
-            feature_vector=_feature_vector(),
-            feature_temporal=_feature_temporal(),
-        )
-
-    def reset(self):
-        pass
-
-
 class Phase5AuthFlowTests(unittest.TestCase):
-    def test_auth_sequence_succeeds_in_order(self):
+    def test_auth_sequence_requires_explicit_bravo_approval(self):
         auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
 
         first = auth.update("ONE", now=1.0)
         second = auth.update("TWO", now=2.0)
         third = auth.update("THREE", now=3.0)
+        approved = auth.update("BRAVO", now=4.0)
 
         self.assertEqual(first.status, "started")
         self.assertEqual(second.status, "progress")
-        self.assertEqual(third.status, "success")
-        self.assertTrue(third.authenticated)
+        self.assertEqual(third.status, "progress")
+        self.assertEqual(third.expected_next, "BRAVO")
+        self.assertEqual(third.matched_steps, 3)
+        self.assertEqual(third.total_steps, 4)
+        self.assertEqual(approved.status, "success")
+        self.assertTrue(approved.authenticated)
 
     def test_auth_resets_on_wrong_gesture(self):
         auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
@@ -73,6 +35,53 @@ class Phase5AuthFlowTests(unittest.TestCase):
         self.assertEqual(out.expected_next, "ONE")
         self.assertEqual(out.failed_attempts, 1)
 
+    def test_auth_bravo_before_sequence_complete_is_ignored(self):
+        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
+        auth.update("ONE", now=1.0)
+
+        out = auth.update("BRAVO", now=2.0)
+
+        self.assertEqual(out.status, "progress")
+        self.assertEqual(out.matched_steps, 1)
+        self.assertEqual(out.expected_next, "TWO")
+
+    def test_auth_ignores_number_jitter_while_waiting_for_bravo(self):
+        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
+        auth.update("ONE", now=1.0)
+        auth.update("TWO", now=2.0)
+        auth.update("THREE", now=3.0)
+
+        out = auth.update("THREE", now=3.4)
+
+        self.assertEqual(out.status, "progress")
+        self.assertEqual(out.matched_steps, 3)
+        self.assertEqual(out.expected_next, "BRAVO")
+        self.assertEqual(out.failed_attempts, 0)
+
+    def test_auth_full_sequence_allows_explicit_reset(self):
+        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
+        auth.update("ONE", now=1.0)
+        auth.update("TWO", now=2.0)
+        auth.update("THREE", now=3.0)
+
+        fist = auth.update("FIST", now=3.4)
+
+        self.assertEqual(fist.status, "reset_cancel")
+        self.assertEqual(fist.matched_steps, 0)
+        self.assertEqual(fist.expected_next, "ONE")
+
+    def test_auth_full_sequence_ignores_extra_digits_while_waiting_for_bravo(self):
+        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
+        auth.update("ONE", now=1.0)
+        auth.update("TWO", now=2.0)
+        auth.update("THREE", now=3.0)
+
+        digit = auth.update("THREE", now=3.8)
+
+        self.assertEqual(digit.status, "progress")
+        self.assertEqual(digit.matched_steps, 3)
+        self.assertEqual(digit.expected_next, "BRAVO")
+
     def test_auth_resets_on_timeout(self):
         auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"), step_timeout_s=2.0))
         auth.update("ONE", now=1.0)
@@ -84,33 +93,45 @@ class Phase5AuthFlowTests(unittest.TestCase):
         self.assertEqual(out.expected_next, "ONE")
         self.assertEqual(out.failed_attempts, 1)
 
-    def test_auth_restart_accepts_first_gesture_again(self):
+    def test_auth_thumbs_down_steps_back_one_gesture(self):
         auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"), step_timeout_s=4.0))
         auth.update("ONE", now=1.0)
+        auth.update("TWO", now=2.0)
 
-        out = auth.update("ONE", now=2.0)
+        out = auth.update("THUMBS_DOWN", now=3.0)
 
-        self.assertEqual(out.status, "started")
+        self.assertEqual(out.status, "step_back")
         self.assertEqual(out.matched_steps, 1)
         self.assertEqual(out.expected_next, "TWO")
 
-    def test_auth_suite_can_be_instantiated_for_auth_labels(self):
-        suite = GestureSuite(allowed=AUTH_ALLOWED)
-        suite.engine = _FakeEngine("ONE")
+    def test_auth_thumbs_down_from_approval_stage_returns_to_previous_number(self):
+        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"), step_timeout_s=4.0))
+        auth.update("ONE", now=1.0)
+        auth.update("TWO", now=2.0)
 
-        out = suite.detect(object())
+        out = auth.update("THUMBS_DOWN", now=3.0)
 
-        self.assertEqual(out.chosen, "ONE")
-        self.assertEqual(out.stable, "ONE")
+        self.assertEqual(out.status, "step_back")
+        self.assertEqual(out.matched_steps, 1)
+        self.assertEqual(out.expected_next, "TWO")
+
+    def test_auth_set_is_restricted_to_explicit_runtime_auth_gestures(self):
+        self.assertEqual(
+            AUTH_ALLOWED,
+            {"FIST", "BRAVO", "THUMBS_DOWN", "ONE", "TWO", "THREE"},
+        )
 
     def test_auth_enters_lockout_after_max_failures(self):
-        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"), max_failures=2, cooldown_s=5.0))
+        auth = GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"), max_failures=5, cooldown_s=10.0))
 
         auth.update("FOUR", now=1.0)
-        out = auth.update("FIVE", now=2.0)
+        auth.update("FOUR", now=2.0)
+        auth.update("FOUR", now=3.0)
+        auth.update("FOUR", now=4.0)
+        out = auth.update("FOUR", now=5.0)
 
         self.assertEqual(out.status, "locked_out")
-        self.assertEqual(out.failed_attempts, 2)
+        self.assertEqual(out.failed_attempts, 5)
         self.assertGreater(out.retry_after_s or 0.0, 0.0)
 
     def test_auth_recovers_after_lockout_window(self):
