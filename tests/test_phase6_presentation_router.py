@@ -16,8 +16,12 @@ from app.control.window_watch import (
     WindowWatch,
 )
 from app.lifecycle.runtime_status import _format_execution_policy_status, _format_presentation_context
-from app.modes.presentation import map_gesture_to_action as map_presentation_action
-from app.modes.presentation import resolve_presentation_action
+from app.modes.presentation import (
+    PRESENTATION_PLAYBACK_ACTIONS,
+    PRESENTATION_PLAYBACK_GESTURES,
+    map_gesture_to_action as map_presentation_action,
+    resolve_presentation_action,
+)
 from app.modes.router import ModeRouter
 from app.security.auth import GestureAuth, GestureAuthCfg
 
@@ -188,6 +192,16 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         self.assertEqual(out.mode, "PRESENTATION")
         self.assertFalse(out.executable)
 
+    def test_presentation_policy_is_explicitly_playback_only(self):
+        self.assertEqual(
+            PRESENTATION_PLAYBACK_GESTURES,
+            {"POINT_RIGHT", "POINT_LEFT", "OPEN_PALM", "PEACE_SIGN"},
+        )
+        self.assertEqual(
+            PRESENTATION_PLAYBACK_ACTIONS,
+            {"PRESENT_NEXT", "PRESENT_PREV", "PRESENT_START", "PRESENT_EXIT"},
+        )
+
     def test_resolve_presentation_action_maps_reserved_gestures_conservatively(self):
         watch = WindowWatch(
             backend=StubForegroundWindowBackend(
@@ -209,6 +223,46 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         self.assertEqual(start.intent.action_name, "PRESENT_START")
         self.assertEqual(next_slide.intent.action_name, "NO_ACTION")
         self.assertIn("navigation_blocked", next_slide.intent.reason)
+
+    def test_presentation_exit_uses_peace_sign(self):
+        watch = WindowWatch(
+            backend=StubForegroundWindowBackend(
+                ForegroundWindowSnapshot(
+                    process_name="msedge.exe",
+                    window_title="Deck - Google Slides",
+                    window_rect=(0, 0, 1919, 1079),
+                    screen_size=(1920, 1080),
+                    valid=True,
+                    reason="ok",
+                )
+            )
+        )
+        context = watch.presentation_context()
+
+        out = resolve_presentation_action(gesture_label="PEACE_SIGN", context=context)
+
+        self.assertEqual(out.intent.action_name, "PRESENT_EXIT")
+        self.assertEqual(out.intent.gesture_label, "PEACE_SIGN")
+
+    def test_non_playback_gesture_remains_no_action_even_in_valid_context(self):
+        watch = WindowWatch(
+            backend=StubForegroundWindowBackend(
+                ForegroundWindowSnapshot(
+                    process_name="msedge.exe",
+                    window_title="Deck - Google Slides",
+                    window_rect=(0, 0, 1919, 1079),
+                    screen_size=(1920, 1080),
+                    valid=True,
+                    reason="ok",
+                )
+            )
+        )
+        context = watch.presentation_context()
+
+        out = resolve_presentation_action(gesture_label="FIST", context=context)
+
+        self.assertEqual(out.intent.action_name, "NO_ACTION")
+        self.assertIn("unmapped_gesture:FIST", out.intent.reason)
 
     def test_resolve_presentation_action_rejects_unsupported_context(self):
         watch = WindowWatch(

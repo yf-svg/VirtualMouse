@@ -26,6 +26,7 @@ from app.lifecycle.runtime_status import _format_execution_policy_status, _forma
 from app.modes.general import resolve_general_action
 from app.modes.router import ModeRouter
 from app.modes.presentation import PresentationModeOut, resolve_presentation_action
+from app.modes.presentation_runtime import PresentationGestureInterpreter
 from app.perception.camera import Camera
 from app.perception.hand_tracker import HandTracker
 from app.perception.landmark_smoothing import SelectiveLandmarkSmoother
@@ -47,6 +48,7 @@ class RuntimeContext:
     auth_suite: GestureSuite
     auth_interpreter: AuthGestureInterpreter
     ops_suite: GestureSuite
+    presentation_interpreter: PresentationGestureInterpreter
     router: ModeRouter
     clutch: ClutchController
     scroll_mode: ScrollModeController
@@ -110,6 +112,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
     auth_suite = GestureSuite(allowed=auth_allowed, priority=auth_priority)
     auth_interpreter = AuthGestureInterpreter(auth_cfg=router.auth_cfg)
     ops_suite = GestureSuite()
+    presentation_interpreter = PresentationGestureInterpreter()
     clutch = ClutchController()
     scroll_mode = ScrollModeController()
     primary_interaction = PrimaryInteractionController()
@@ -144,6 +147,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
         auth_suite=auth_suite,
         auth_interpreter=auth_interpreter,
         ops_suite=ops_suite,
+        presentation_interpreter=presentation_interpreter,
         router=router,
         clutch=clutch,
         scroll_mode=scroll_mode,
@@ -389,6 +393,10 @@ def run_loop(initial_state: AppState) -> None:
                         break
                     cursor_point = cursor_point_from_landmarks(lm_smooth)
                     if ctx.router.state == AppState.ACTIVE_PRESENTATION:
+                        presentation_signal = ctx.presentation_interpreter.update(
+                            suite_out=out,
+                            hand_present=True,
+                        )
                         ctx.clutch.reset()
                         ctx.scroll_mode.reset()
                         ctx.primary_interaction.reset()
@@ -396,7 +404,7 @@ def run_loop(initial_state: AppState) -> None:
                         ctx.cursor_preview.reset()
                         ctx.execution_safety.reset()
                         presentation_out = resolve_presentation_action(
-                            gesture_label=out.eligible,
+                            gesture_label=presentation_signal.event_label,
                             context=presentation_context,
                         )
                         safety = ctx.execution_safety.evaluate_presentation(
@@ -413,6 +421,7 @@ def run_loop(initial_state: AppState) -> None:
                         extra = (
                             f"{_format_hand_overlay(handed, out)} | "
                             f"{_format_presentation_context(presentation_context)} | "
+                            f"{presentation_signal.status_text()} | "
                             f"CLT:{ctx.clutch.state.value} | "
                             f"SCR:{ctx.scroll_mode.state.value} | "
                             f"PRI:{ctx.primary_interaction.state.value} | "
@@ -424,6 +433,7 @@ def run_loop(initial_state: AppState) -> None:
                             f"{_format_single_execution_report(exec_report)}"
                         )
                     else:
+                        ctx.presentation_interpreter.reset()
                         general_out = resolve_general_action(
                             gesture_label=out.eligible,
                             cursor_point=cursor_point,
@@ -490,6 +500,7 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_interpreter.reset()
                     ctx.auth_overlay_store.reset()
                     ctx.ops_suite.reset()
+                    ctx.presentation_interpreter.reset()
                     general_out = resolve_general_action(
                         gesture_label=None,
                         cursor_point=None,
@@ -526,6 +537,10 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_interpreter.reset()
                     ctx.auth_overlay_store.reset()
                     ctx.ops_suite.reset()
+                    presentation_signal = ctx.presentation_interpreter.update(
+                        suite_out=None,
+                        hand_present=False,
+                    )
                     ctx.clutch.reset()
                     ctx.scroll_mode.reset()
                     ctx.primary_interaction.reset()
@@ -548,6 +563,7 @@ def run_loop(initial_state: AppState) -> None:
                     extra = (
                         f"No hand detected | "
                         f"{_format_presentation_context(presentation_context)} | "
+                        f"{presentation_signal.status_text()} | "
                         f"{format_action_intent(presentation_out.intent)} | "
                         f"{_format_execution_policy_status(ctx, safety.reason, route_summary=route_decision.summary())} | "
                         f"{state.lifecycle_status_text} | "
@@ -557,6 +573,7 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_interpreter.reset()
                     ctx.auth_overlay_store.reset()
                     ctx.ops_suite.reset()
+                    ctx.presentation_interpreter.reset()
                     ctx.clutch.reset()
                     ctx.scroll_mode.reset()
                     ctx.primary_interaction.reset()

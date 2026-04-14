@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Mapping
 
 from app.control.actions import ActionIntent, no_action
 from app.control.window_watch import PresentationAppKind, PresentationContext
@@ -12,12 +13,24 @@ class PresentationModeOut:
     context: PresentationContext
 
 
-PRESENTATION_DRY_RUN_BINDINGS: dict[str, str] = {
-    "POINT_RIGHT": "PRESENT_NEXT",
-    "POINT_LEFT": "PRESENT_PREV",
-    "OPEN_PALM": "PRESENT_START",
-    "FIST": "PRESENT_EXIT",
+@dataclass(frozen=True)
+class PresentationActionBinding:
+    action_name: str
+    capability: str
+    playback_only: bool = True
+
+
+PRESENTATION_PLAYBACK_BINDINGS: Mapping[str, PresentationActionBinding] = {
+    "POINT_RIGHT": PresentationActionBinding("PRESENT_NEXT", "navigation"),
+    "POINT_LEFT": PresentationActionBinding("PRESENT_PREV", "navigation"),
+    "OPEN_PALM": PresentationActionBinding("PRESENT_START", "start"),
+    "PEACE_SIGN": PresentationActionBinding("PRESENT_EXIT", "exit"),
 }
+
+PRESENTATION_PLAYBACK_GESTURES = frozenset(PRESENTATION_PLAYBACK_BINDINGS)
+PRESENTATION_PLAYBACK_ACTIONS = frozenset(
+    binding.action_name for binding in PRESENTATION_PLAYBACK_BINDINGS.values()
+)
 
 
 def resolve_presentation_action(
@@ -31,8 +44,8 @@ def resolve_presentation_action(
             context=context,
         )
 
-    action_name = PRESENTATION_DRY_RUN_BINDINGS.get(gesture_label)
-    if action_name is None:
+    binding = PRESENTATION_PLAYBACK_BINDINGS.get(gesture_label)
+    if binding is None:
         return PresentationModeOut(
             intent=no_action(
                 reason=f"unmapped_gesture:{gesture_label}",
@@ -52,7 +65,17 @@ def resolve_presentation_action(
             context=context,
         )
 
-    if action_name in {"PRESENT_NEXT", "PRESENT_PREV"} and not context.navigation_allowed:
+    if not binding.playback_only:
+        return PresentationModeOut(
+            intent=no_action(
+                reason=f"presentation_action_scope_blocked:{binding.action_name}",
+                gesture_label=gesture_label,
+                mode="PRESENTATION",
+            ),
+            context=context,
+        )
+
+    if binding.capability == "navigation" and not context.navigation_allowed:
         return PresentationModeOut(
             intent=no_action(
                 reason=f"presentation_navigation_blocked:{context.reason}",
@@ -62,7 +85,7 @@ def resolve_presentation_action(
             context=context,
         )
 
-    if action_name == "PRESENT_START" and not context.supports_start:
+    if binding.capability == "start" and not context.supports_start:
         return PresentationModeOut(
             intent=no_action(
                 reason=f"presentation_start_blocked:{context.reason}",
@@ -72,7 +95,7 @@ def resolve_presentation_action(
             context=context,
         )
 
-    if action_name == "PRESENT_EXIT" and not context.supports_exit:
+    if binding.capability == "exit" and not context.supports_exit:
         return PresentationModeOut(
             intent=no_action(
                 reason=f"presentation_exit_blocked:{context.reason}",
@@ -84,7 +107,7 @@ def resolve_presentation_action(
 
     return PresentationModeOut(
         intent=ActionIntent(
-            action_name=action_name,
+            action_name=binding.action_name,
             gesture_label=gesture_label,
             executable=False,
             reason="dry_run_only",

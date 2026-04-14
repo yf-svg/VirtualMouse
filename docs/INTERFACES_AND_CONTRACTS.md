@@ -165,8 +165,18 @@
 - out: `PresentationModeOut(intent, context)`
 - invariant:
   - presentation logic stays separate from General Mode
-  - `POINT_RIGHT/POINT_LEFT/OPEN_PALM/FIST` are resolved only inside presentation policy
+  - Presentation Mode is playback-only for prepared slide decks; editing/settings actions must not be inferred here
+  - `POINT_RIGHT/POINT_LEFT/OPEN_PALM/PEACE_SIGN` are resolved only inside presentation policy
+  - consumes presentation-approved gesture events, not continuous held labels
   - unsupported or ambiguous context must produce `NO_ACTION`
+
+### `PresentationGestureInterpreter.update(suite_out, hand_present)`
+- out: `PresentationGestureSignal(gesture_label, event_label, active_frames, threshold_frames, reason)`
+- invariant:
+  - presentation runtime gating stays local to Presentation Mode
+  - navigation emits one-shot events per held label; `OPEN_PALM`/`PEACE_SIGN` require stricter confirmation than navigation
+  - brief hand-loss/reacquire must not duplicate the same playback command
+  - non-playback gestures remain invisible to presentation action routing
 
 ### `MouseBackend.*`
 - out: side effect only
@@ -220,7 +230,7 @@
 ## STUB CONTRACTS
 - `app/modes/general.py` -> no action semantics defined yet
 - `app/modes/general.py` -> full General Mode dry-run stack is defined; cursor pose policy remains provisional but isolated
-- `app/modes/presentation.py` -> presentation resolver now exists; `OPEN_PALM` start and `FIST` exit remain provisional/localized until explicitly re-approved
+- `app/modes/presentation.py` -> presentation resolver now exists; `OPEN_PALM` start and `PEACE_SIGN` exit remain provisional/localized until explicitly re-approved
 - `app/control/actions.py` -> dry-run contract only
 - `app/control/execution.py` / `mouse.py` -> live General + Presentation execution seams exist; explicit `dry_run`/`live` policy + runtime safety gate keep them fail-safe by default
 - `app/lifecycle/operator_lifecycle.py` -> manual exit is explicit; gesture exit is localized to `THUMBS_DOWN` eligible edges in active operator states and remains provisional

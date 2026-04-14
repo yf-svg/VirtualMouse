@@ -92,6 +92,13 @@ class PresentationContextConfig:
 
 
 @dataclass(frozen=True)
+class PresentationRuntimeConfig:
+    navigation_confirm_frames: int = 1
+    session_control_confirm_frames: int = 2
+    release_grace_frames: int = 2
+
+
+@dataclass(frozen=True)
 class AppConfig:
     app_name: str = "Virtual Gesture Mouse"
     target_fps: int = 30
@@ -129,6 +136,7 @@ class AppConfig:
     operator_lifecycle: OperatorLifecycleConfig = field(default_factory=OperatorLifecycleConfig)
     operator_override: OperatorOverrideConfig = field(default_factory=OperatorOverrideConfig)
     presentation_context: PresentationContextConfig = field(default_factory=PresentationContextConfig)
+    presentation_runtime: PresentationRuntimeConfig = field(default_factory=PresentationRuntimeConfig)
 
 
 CONFIG = AppConfig()

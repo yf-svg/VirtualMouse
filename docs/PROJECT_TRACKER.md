@@ -51,7 +51,7 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 ## GESTURE MAP
 - Auth-only default: `ONE TWO THREE`
 - Ops runtime: `FIST CLOSED_PALM OPEN_PALM PEACE_SIGN L BRAVO THUMBS_DOWN POINT_RIGHT POINT_LEFT PINCH_INDEX PINCH_MIDDLE PINCH_RING PINCH_PINKY PINCH_IM PINCH_IMRP`
-- Presentation subset: `POINT_RIGHT POINT_LEFT OPEN_PALM FIST`
+- Presentation subset: `POINT_RIGHT POINT_LEFT OPEN_PALM PEACE_SIGN`
 - Action map: not implemented yet
 - Notable constraints:
   - `BRAVO` vs `FIST` tuned
@@ -77,9 +77,11 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 - NOTE: cursor preview now exists as the lowest-priority General Mode owner; cursor pose policy is isolated and still provisional (`L` by default)
 - NOTE: safe OS execution now uses an explicit `dry_run`/`live` profile plus per-subsystem toggles; invalid or incomplete live config fails safe to no OS action
 - NOTE: runtime execution now passes through `ExecutionSafetyGate`, which suppresses unsafe live cursor/primary/secondary/scroll output on hand loss or feature instability and taints unstable primary clicks
-- NOTE: presentation mode now resolves `POINT_RIGHT/POINT_LEFT/OPEN_PALM/FIST` through a dedicated policy and uses the same safety + execution seams as General Mode
+- NOTE: presentation mode now resolves `POINT_RIGHT/POINT_LEFT/OPEN_PALM/PEACE_SIGN` through a dedicated policy and uses the same safety + execution seams as General Mode
+- NOTE: presentation mode is now explicitly scoped as playback-only for prepared slide decks; editing/settings actions remain out of scope until a separate policy is approved
+- NOTE: presentation runtime now uses a local one-shot interpreter so held playback gestures do not auto-repeat; `OPEN_PALM` start and `PEACE_SIGN` exit require extra confirmation frames beyond navigation
 - NOTE: `WindowWatch` now performs conservative foreground-app detection for PowerPoint, presentation-like browser tabs, and common PDF viewers; ambiguous context fails safe to no presentation action
-- NOTE: `OPEN_PALM -> PRESENT_START` and `FIST -> PRESENT_EXIT` are now implemented as localized provisional presentation semantics because the repo had the reserved gesture subset but not the final action detail
+- NOTE: `OPEN_PALM -> PRESENT_START` and `PEACE_SIGN -> PRESENT_EXIT` are now implemented as localized provisional presentation semantics because `FIST` is already overloaded elsewhere and `CLOSED_PALM` is considered too confusable for this repo
 - NOTE: runtime/operator exit now uses an explicit lifecycle seam; manual `ESC/Q` exit and localized `THUMBS_DOWN` gesture exit both neutralize live/controller ownership before `EXITING`
 - NOTE: centralized operator override policy now layers execution-profile and presentation-routing overrides onto the existing executor/router seams; invalid overrides fail safe to dry-run/auto-routing behavior
 - BUG: validation not auto-run after recording save
