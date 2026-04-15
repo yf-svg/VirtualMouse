@@ -7,7 +7,7 @@ This document describes the current authentication behavior in the repo:
 - which gestures are allowed during auth
 - what role each auth gesture has
 - the default unlock flow
-- timeout, reset, backtrack, and lockout behavior
+- keypad-style buffer, submit, reset, backtrack, and lockout behavior
 
 Source of truth:
 
@@ -25,10 +25,18 @@ During locked/auth states, the runtime auth suite now allows only these gestures
 4. `BRAVO`
 5. `FIST`
 6. `THUMBS_DOWN`
+7. `PEACE_SIGN`
 
 Everything else is ignored by the auth suite during authentication.
 
-That means gestures such as `CLOSED_PALM`, `OPEN_PALM`, `L`, `POINT_RIGHT`, `POINT_LEFT`, `PINCH_*`, and other non-auth gestures are not recognized as auth inputs.
+That means gestures such as `CLOSED_PALM`, `L`, `POINT_RIGHT`, `POINT_LEFT`, `PINCH_*`, and other non-auth gestures are not recognized as auth inputs.
+
+Mode-local aliases:
+
+- `PEACE_SIGN` is accepted as auth step `TWO`
+- `OPEN_PALM` is accepted as auth step `FIVE` only when `FIVE` is present in the configured auth sequence
+
+These aliases are handled only inside the auth runtime path. They do not rename the canonical detector vocabulary globally.
 
 ## Gesture Roles
 
@@ -37,6 +45,7 @@ That means gestures such as `CLOSED_PALM`, `OPEN_PALM`, `L`, `POINT_RIGHT`, `POI
 
 `TWO`
 - Auth digit step 2 in the default sequence.
+- Auth mode also accepts `PEACE_SIGN` as the physical pose for this step.
 
 `THREE`
 - Auth digit step 3 in the default sequence.
@@ -44,16 +53,17 @@ That means gestures such as `CLOSED_PALM`, `OPEN_PALM`, `L`, `POINT_RIGHT`, `POI
 `BRAVO`
 - Explicit approval gesture.
 - Required after the full number sequence is entered.
+- Validates the committed auth buffer.
 - Auth does not complete until `BRAVO` is shown after `ONE -> TWO -> THREE`.
 
 `FIST`
 - Explicit reset gesture.
-- Clears current auth progress immediately.
+- Clears the committed auth buffer immediately.
 
 `THUMBS_DOWN`
 - Explicit back gesture.
-- Moves auth progress back by one step.
-- If used after entering the full number sequence but before approval, it returns auth to the previous number step.
+- Removes only the most recently committed auth digit.
+- If used after entering the full number sequence but before approval, it returns auth to the previous digit step.
 
 ## Default Unlock Flow
 
@@ -66,9 +76,11 @@ The current default authentication flow is:
 
 Important:
 
-- `ONE..THREE` enter the auth sequence.
-- `BRAVO` is the final approval step.
+- `ONE..THREE` are entered like keypad digits into a committed auth buffer.
+- Entered digits stay latched even if the hand disappears or changes pose.
+- `BRAVO` is the final approval step and validates the committed buffer.
 - The app does not unlock immediately after `THREE`; it waits for `BRAVO`.
+- `THUMBS_DOWN` edits the stored buffer; `FIST` clears it.
 
 ## Runtime Configuration
 
@@ -84,11 +96,18 @@ Current defaults from [app/security/auth.py](c:/Users/win/Desktop/VirtualMouse/a
 
 What this means:
 
-- Each expected auth step must arrive within 4 seconds of the previous accepted step.
-- `FIST` resets the whole attempt.
-- `THUMBS_DOWN` moves back one step instead of failing the attempt.
+- Auth input is latched; the user may pause between digits without losing committed entries.
+- `FIST` resets the whole buffer.
+- `THUMBS_DOWN` removes one committed digit instead of failing the attempt.
+- `BRAVO` validates the committed buffer only after the buffer is full.
+- `step_timeout_s` remains in config for compatibility, but it no longer clears committed auth input during normal keypad-style entry.
 - 5 failed attempts trigger lockout.
 - Lockout lasts 10 seconds.
+
+If a future auth sequence includes `FIVE`:
+
+- the auth runtime will accept the canonical `OPEN_PALM` detector label as auth step `FIVE`
+- this remapping stays localized to auth mode so training/runtime can keep `OPEN_PALM` as the canonical detector label
 
 ## Status Meanings
 
@@ -100,7 +119,11 @@ What this means:
 
 `progress`
 - Auth is in progress.
-- This includes the state after all numbers are entered and the system is waiting for `BRAVO`.
+- This means at least one committed digit is stored and the buffer is not full yet.
+
+`ready_to_submit`
+- All required digits are stored in the committed buffer.
+- The system is waiting for `BRAVO`.
 
 `step_back`
 - `THUMBS_DOWN` moved progress back one step.
@@ -113,10 +136,7 @@ What this means:
 - `FIST` reset the auth attempt.
 
 `reset_wrong`
-- A recognized auth gesture was used at the wrong time or in the wrong order.
-
-`reset_timeout`
-- The next expected step did not arrive before timeout.
+- The committed buffer failed validation when submitted with `BRAVO`.
 
 `locked_out`
 - Too many failures occurred.
@@ -125,28 +145,31 @@ What this means:
 ## Fail-Safe Behavior
 
 Wrong recognized auth gesture:
-- Resets progress and counts as a failure.
-
-Timeout:
-- Resets progress and counts as a failure.
+- Does not erase committed digits by itself.
 
 Reset gesture:
-- Clears progress without ambiguity.
+- Clears the committed buffer without ambiguity.
 
 Back gesture:
-- Moves one step backward without counting as a failure.
+- Removes one committed digit without counting as a failure.
 
 Non-auth gesture during auth:
 - Ignored by the auth suite instead of being treated as a valid auth candidate.
+
+Pause / no hand:
+- Does not erase committed digits.
+- No new digit is committed until the user presents the next intentional auth gesture.
 
 ## Practical Example
 
 If you want to unlock with the current defaults:
 
 1. Show `ONE`
-2. Show `TWO`
-3. Show `THREE`
-4. Show `BRAVO`
+2. Relax or reposition if needed
+3. Show `TWO`
+4. Relax or reposition if needed
+5. Show `THREE`
+6. Show `BRAVO`
 
 If you need to correct yourself:
 

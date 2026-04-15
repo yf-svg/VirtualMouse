@@ -22,6 +22,7 @@ class GestureSnapshot:
     fist: bool
     closed_palm: bool
     open_palm: bool
+    shaka: bool
     peace_sign: bool
     number: Optional[str]  # ONE..FIVE or None
     l_gesture: bool
@@ -65,6 +66,7 @@ class GestureRegistry:
                 fist=False,
                 closed_palm=False,
                 open_palm=False,
+                shaka=False,
                 peace_sign=False,
                 number=None,
                 l_gesture=False,
@@ -81,6 +83,7 @@ class GestureRegistry:
                 fist=True,
                 closed_palm=False,
                 open_palm=False,
+                shaka=False,
                 peace_sign=False,
                 number=None,
                 l_gesture=False,
@@ -92,8 +95,9 @@ class GestureRegistry:
 
         closed_palm = self.hand.detect_closed_palm(hand_landmarks)
         open_palm = (not closed_palm) and self.hand.detect_open_palm(hand_landmarks)
+        shaka = self.hand.detect_shaka(hand_landmarks)
         peace_sign = self.hand.detect_peace_sign(hand_landmarks)
-        if peace_sign:
+        if peace_sign or shaka:
             pinch = None
         else:
             pinch = detect_pinch_type(hand_landmarks)
@@ -108,6 +112,7 @@ class GestureRegistry:
             fist=fist,
             closed_palm=closed_palm,
             open_palm=open_palm,
+            shaka=shaka,
             peace_sign=peace_sign,
             number=number,
             l_gesture=l_gesture,

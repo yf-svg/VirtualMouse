@@ -34,7 +34,7 @@ class ScrollOut:
 class ScrollModeController:
     """
     Stateful dry-run scroll-mode controller.
-    Scroll is mode-based, toggled by PINCH_IM edges, and driven only by
+    Scroll is mode-based, toggled by a dedicated gesture edge, and driven only by
     abstract cursor-space movement after activation.
     """
 
@@ -45,6 +45,10 @@ class ScrollModeController:
     @property
     def state(self) -> ScrollState:
         return self._state
+
+    @property
+    def toggle_label(self) -> str:
+        return self.cfg.toggle_gesture_label
 
     def reset(self) -> None:
         self._state = ScrollState.NEUTRAL
@@ -62,11 +66,12 @@ class ScrollModeController:
         now: float | None = None,
     ) -> ScrollOut:
         now = time.monotonic() if now is None else float(now)
+        toggle_label = self.toggle_label
 
-        if gesture_label != "PINCH_IM":
+        if gesture_label != toggle_label:
             self._toggle_armed = True
 
-        if self._state != ScrollState.HAND_LOST_SAFE and gesture_label == "PINCH_IM" and self._toggle_armed:
+        if self._state != ScrollState.HAND_LOST_SAFE and gesture_label == toggle_label and self._toggle_armed:
             self._toggle_armed = False
             return self._toggle_mode(cursor_point=cursor_point)
 
@@ -84,6 +89,7 @@ class ScrollModeController:
         )
 
     def _toggle_mode(self, *, cursor_point: CursorPoint | None) -> ScrollOut:
+        toggle_label = self.toggle_label
         if self._state == ScrollState.SCROLL_MODE_ACTIVE:
             self._state = ScrollState.NEUTRAL
             self._axis = ScrollAxis.NONE
@@ -93,7 +99,7 @@ class ScrollModeController:
             return ScrollOut(
                 state=self._state,
                 axis=self._axis,
-                intent=dry_run_action("SCROLL_MODE_EXIT", gesture_label="PINCH_IM", reason="scroll_mode_toggled_off"),
+                intent=dry_run_action("SCROLL_MODE_EXIT", gesture_label=toggle_label, reason="scroll_mode_toggled_off"),
                 owns_state=True,
                 movement=0.0,
             )
@@ -102,7 +108,7 @@ class ScrollModeController:
             return ScrollOut(
                 state=self._state,
                 axis=self._axis,
-                intent=no_action(reason="scroll_toggle_ignored_no_cursor", gesture_label="PINCH_IM"),
+                intent=no_action(reason="scroll_toggle_ignored_no_cursor", gesture_label=toggle_label),
                 owns_state=False,
                 movement=0.0,
             )
@@ -115,19 +121,20 @@ class ScrollModeController:
         return ScrollOut(
             state=self._state,
             axis=self._axis,
-            intent=dry_run_action("SCROLL_MODE_ENTER", gesture_label="PINCH_IM", reason="scroll_mode_toggled_on"),
+            intent=dry_run_action("SCROLL_MODE_ENTER", gesture_label=toggle_label, reason="scroll_mode_toggled_on"),
             owns_state=True,
             movement=0.0,
         )
 
     def _update_active(self, *, cursor_point: CursorPoint | None, now: float) -> ScrollOut:
+        toggle_label = self.toggle_label
         if cursor_point is None:
             self._state = ScrollState.HAND_LOST_SAFE
             self._loss_started_s = now
             return ScrollOut(
                 state=self._state,
                 axis=self._axis,
-                intent=no_action(reason="scroll_hand_loss_wait", gesture_label="PINCH_IM"),
+                intent=no_action(reason="scroll_hand_loss_wait", gesture_label=toggle_label),
                 owns_state=True,
                 movement=0.0,
             )
@@ -144,7 +151,7 @@ class ScrollModeController:
                 return ScrollOut(
                     state=self._state,
                     axis=self._axis,
-                    intent=no_action(reason="scroll_dead_zone", gesture_label="PINCH_IM"),
+                    intent=no_action(reason="scroll_dead_zone", gesture_label=toggle_label),
                     owns_state=True,
                     movement=0.0,
                 )
@@ -158,7 +165,7 @@ class ScrollModeController:
                 return ScrollOut(
                     state=self._state,
                     axis=self._axis,
-                    intent=no_action(reason="scroll_axis_locked_vertical", gesture_label="PINCH_IM"),
+                    intent=no_action(reason="scroll_axis_locked_vertical", gesture_label=toggle_label),
                     owns_state=True,
                     movement=0.0,
                 )
@@ -169,7 +176,7 @@ class ScrollModeController:
                 return ScrollOut(
                     state=self._state,
                     axis=self._axis,
-                    intent=no_action(reason="scroll_axis_locked_horizontal", gesture_label="PINCH_IM"),
+                    intent=no_action(reason="scroll_axis_locked_horizontal", gesture_label=toggle_label),
                     owns_state=True,
                     movement=0.0,
                 )
@@ -177,7 +184,7 @@ class ScrollModeController:
             return ScrollOut(
                 state=self._state,
                 axis=self._axis,
-                intent=no_action(reason="scroll_axis_undetermined", gesture_label="PINCH_IM"),
+                intent=no_action(reason="scroll_axis_undetermined", gesture_label=toggle_label),
                 owns_state=True,
                 movement=0.0,
             )
@@ -193,7 +200,7 @@ class ScrollModeController:
                 return ScrollOut(
                     state=self._state,
                     axis=self._axis,
-                    intent=no_action(reason="scroll_axis_reset_pause", gesture_label="PINCH_IM"),
+                    intent=no_action(reason="scroll_axis_reset_pause", gesture_label=toggle_label),
                     owns_state=True,
                     movement=0.0,
                 )
@@ -201,7 +208,7 @@ class ScrollModeController:
             return ScrollOut(
                 state=self._state,
                 axis=self._axis,
-                intent=no_action(reason="scroll_low_motion_wait", gesture_label="PINCH_IM"),
+                intent=no_action(reason="scroll_low_motion_wait", gesture_label=toggle_label),
                 owns_state=True,
                 movement=0.0,
             )
@@ -214,7 +221,7 @@ class ScrollModeController:
             axis=self._axis,
             intent=dry_run_action(
                 "SCROLL_VERTICAL" if self._axis == ScrollAxis.VERTICAL else "SCROLL_HORIZONTAL",
-                gesture_label="PINCH_IM",
+                gesture_label=toggle_label,
                 reason="scroll_move",
             ),
             owns_state=True,
@@ -228,6 +235,7 @@ class ScrollModeController:
         cursor_point: CursorPoint | None,
         now: float,
     ) -> ScrollOut:
+        toggle_label = self.toggle_label
         if cursor_point is not None and self._loss_started_s is not None and (now - self._loss_started_s) <= self.cfg.hand_loss_grace_s:
             self._state = ScrollState.SCROLL_MODE_ACTIVE
             self._loss_started_s = None
@@ -245,7 +253,7 @@ class ScrollModeController:
             return ScrollOut(
                 state=self._state,
                 axis=self._axis,
-                intent=no_action(reason="scroll_hand_loss_wait", gesture_label=gesture_label),
+                intent=no_action(reason="scroll_hand_loss_wait", gesture_label=toggle_label),
                 owns_state=True,
                 movement=0.0,
             )
@@ -258,7 +266,7 @@ class ScrollModeController:
         return ScrollOut(
             state=self._state,
             axis=self._axis,
-            intent=dry_run_action("SCROLL_MODE_EXIT", gesture_label="PINCH_IM", reason="scroll_exit_hand_loss"),
+            intent=dry_run_action("SCROLL_MODE_EXIT", gesture_label=toggle_label, reason="scroll_exit_hand_loss"),
             owns_state=True,
             movement=0.0,
         )

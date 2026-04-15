@@ -97,6 +97,7 @@ class FeatureWindowTests(unittest.TestCase):
             fist=False,
             closed_palm=False,
             open_palm=False,
+            shaka=False,
             peace_sign=False,
             number=None,
             l_gesture=False,

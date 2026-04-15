@@ -8,7 +8,7 @@ from typing import Any
 
 import joblib
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_recall_fscore_support
 from sklearn.model_selection import GridSearchCV
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
@@ -20,7 +20,7 @@ from app.gestures.model_bundle import (
     RUNTIME_ARTIFACT_KIND,
     RUNTIME_BUNDLE_VERSION,
 )
-from app.gestures.validation import instantiate_group_cv
+from app.gestures.validation import resolve_group_cv_plan
 
 
 TRAINER_VERSION = "phase4.2.v1"
@@ -48,6 +48,17 @@ class SplitMetrics:
     sample_count: int
     accuracy: float
     macro_f1: float
+    labels: tuple[str, ...] = ()
+    per_label: dict[str, "LabelMetrics"] | None = None
+    confusion_matrix: dict[str, dict[str, int]] | None = None
+
+
+@dataclass(frozen=True)
+class LabelMetrics:
+    precision: float
+    recall: float
+    f1: float
+    support: int
 
 
 @dataclass(frozen=True)
@@ -62,7 +73,10 @@ class TrainingResult:
     metrics: dict[str, SplitMetrics]
     sample_counts_by_split: dict[str, int]
     model_selection_status: str
+    model_selection_reason: str | None
     best_params: dict[str, Any]
+    search_param_grid: dict[str, list[Any]]
+    training_policy: dict[str, Any]
     cv_strategy: str | None
     cv_n_splits: int | None
     cv_best_score: float | None
@@ -79,7 +93,10 @@ class TrainingResult:
             "metrics": {name: asdict(metrics) for name, metrics in self.metrics.items()},
             "sample_counts_by_split": dict(self.sample_counts_by_split),
             "model_selection_status": self.model_selection_status,
+            "model_selection_reason": self.model_selection_reason,
             "best_params": dict(self.best_params),
+            "search_param_grid": dict(self.search_param_grid),
+            "training_policy": dict(self.training_policy),
             "cv_strategy": self.cv_strategy,
             "cv_n_splits": self.cv_n_splits,
             "cv_best_score": self.cv_best_score,
@@ -102,7 +119,9 @@ class RuntimeBundleExportResult:
 class ModelSelectionResult:
     model: Any
     status: str
+    reason: str | None
     best_params: dict[str, Any]
+    search_param_grid: dict[str, list[Any]]
     cv_strategy: str | None
     cv_n_splits: int | None
     cv_best_score: float | None
@@ -240,7 +259,10 @@ def train_svm_from_validated_dataset(
         "feature_dimension": payload.get("feature_schema", {}).get("dimension", policy.expected_feature_dimension),
         "labels": list(labels),
         "model_selection_status": selection.status,
+        "model_selection_reason": selection.reason,
         "best_params": dict(selection.best_params),
+        "search_param_grid": dict(selection.search_param_grid),
+        "training_policy": _training_policy_payload(policy),
         "cv_strategy": selection.cv_strategy,
         "cv_n_splits": selection.cv_n_splits,
         "cv_best_score": selection.cv_best_score,
@@ -262,7 +284,10 @@ def train_svm_from_validated_dataset(
         metrics=metrics,
         sample_counts_by_split={name: len(items) for name, items in split_groups.items()},
         model_selection_status=selection.status,
+        model_selection_reason=selection.reason,
         best_params=dict(selection.best_params),
+        search_param_grid=dict(selection.search_param_grid),
+        training_policy=_training_policy_payload(policy),
         cv_strategy=selection.cv_strategy,
         cv_n_splits=selection.cv_n_splits,
         cv_best_score=selection.cv_best_score,
@@ -299,6 +324,19 @@ def _validate_training_payload(payload: dict[str, Any], policy: TrainingPolicy) 
     if not required_splits.issubset(split_names):
         raise ValueError(
             f"Validated dataset must contain train/validation/test samples; got {sorted(split_names)!r}"
+        )
+
+    dataset_labels = {str(sample.get("gesture_label")) for sample in samples}
+    train_labels = {
+        str(sample.get("gesture_label"))
+        for sample in samples
+        if str(sample.get("split")) == "train"
+    }
+    missing_train_labels = sorted(dataset_labels - train_labels)
+    if missing_train_labels:
+        raise ValueError(
+            "Training split must contain every dataset label; missing "
+            f"{missing_train_labels!r} from train."
         )
 
 
@@ -357,6 +395,8 @@ def _build_svm_pipeline(
 def _select_model(train_samples: list[dict[str, Any]], policy: TrainingPolicy) -> ModelSelectionResult:
     x_train, y_train, groups = _xyg(train_samples)
     unique_groups = {str(group) for group in groups.tolist()}
+    search_param_grid = _search_param_grid(policy)
+    _validate_search_policy(policy, search_param_grid)
 
     baseline_model = _build_svm_pipeline(policy)
     baseline_params = {"kernel": policy.kernel, "C": float(policy.c_value), "gamma": policy.gamma}
@@ -366,7 +406,9 @@ def _select_model(train_samples: list[dict[str, Any]], policy: TrainingPolicy) -
         return ModelSelectionResult(
             model=baseline_model,
             status="search_disabled",
+            reason="search_disabled_by_policy",
             best_params=baseline_params,
+            search_param_grid=search_param_grid,
             cv_strategy=None,
             cv_n_splits=None,
             cv_best_score=None,
@@ -377,64 +419,158 @@ def _select_model(train_samples: list[dict[str, Any]], policy: TrainingPolicy) -
         return ModelSelectionResult(
             model=baseline_model,
             status="search_skipped_insufficient_train_users",
+            reason="train_split_has_fewer_than_two_distinct_users",
             best_params=baseline_params,
+            search_param_grid=search_param_grid,
             cv_strategy=None,
             cv_n_splits=None,
             cv_best_score=None,
         )
 
-    try:
-        cv = instantiate_group_cv(
-            labels=[str(label) for label in y_train.tolist()],
-            groups=[str(group) for group in groups.tolist()],
-            random_state=policy.random_state,
-        )
-        search = GridSearchCV(
-            estimator=_build_svm_pipeline(policy),
-            param_grid={
-                "svc__C": [float(value) for value in policy.search_c_values],
-                "svc__gamma": list(policy.search_gamma_values),
-            },
-            scoring={"macro_f1": "f1_macro", "accuracy": "accuracy"},
-            refit=policy.search_refit_metric,
-            cv=cv,
-            n_jobs=None,
-        )
-        search.fit(x_train, y_train, groups=groups)
-        best = search.best_estimator_
-        best_params = {
-            "kernel": policy.kernel,
-            "C": float(search.best_params_["svc__C"]),
-            "gamma": search.best_params_["svc__gamma"],
-        }
-        return ModelSelectionResult(
-            model=best,
-            status="search_ok",
-            best_params=best_params,
-            cv_strategy=cv.__class__.__name__,
-            cv_n_splits=int(cv.get_n_splits(X=x_train, y=y_train, groups=groups)),
-            cv_best_score=float(search.best_score_),
-        )
-    except ValueError:
+    cv_plan = resolve_group_cv_plan(
+        labels=[str(label) for label in y_train.tolist()],
+        groups=[str(group) for group in groups.tolist()],
+        random_state=policy.random_state,
+    )
+    if cv_plan.status != "ok" or cv_plan.strategy is None or cv_plan.n_splits is None:
         baseline_model.fit(x_train, y_train)
         return ModelSelectionResult(
             model=baseline_model,
             status="search_skipped_cv_unavailable",
+            reason=cv_plan.reason,
             best_params=baseline_params,
+            search_param_grid=search_param_grid,
             cv_strategy=None,
             cv_n_splits=None,
             cv_best_score=None,
         )
 
+    cv = _build_svm_pipeline(policy)
+    try:
+        from sklearn.model_selection import GroupKFold, StratifiedGroupKFold
+
+        if cv_plan.strategy == "StratifiedGroupKFold":
+            cv_strategy = StratifiedGroupKFold(
+                n_splits=cv_plan.n_splits,
+                shuffle=True,
+                random_state=policy.random_state,
+            )
+        elif cv_plan.strategy == "GroupKFold":
+            cv_strategy = GroupKFold(n_splits=cv_plan.n_splits)
+        else:
+            raise ValueError(f"Unsupported CV strategy: {cv_plan.strategy}")
+
+        search = GridSearchCV(
+            estimator=cv,
+            param_grid=search_param_grid,
+            scoring={"macro_f1": "f1_macro", "accuracy": "accuracy"},
+            refit=policy.search_refit_metric,
+            cv=cv_strategy,
+            n_jobs=None,
+        )
+        search.fit(x_train, y_train, groups=groups)
+    except ValueError as exc:
+        raise RuntimeError(f"Grouped grid search failed unexpectedly: {exc}") from exc
+
+    best = search.best_estimator_
+    best_params = {
+        "kernel": policy.kernel,
+        "C": float(search.best_params_["svc__C"]),
+        "gamma": search.best_params_["svc__gamma"],
+    }
+    return ModelSelectionResult(
+        model=best,
+        status="search_ok",
+        reason="grid_search_completed",
+        best_params=best_params,
+        search_param_grid=search_param_grid,
+        cv_strategy=cv_plan.strategy,
+        cv_n_splits=cv_plan.n_splits,
+        cv_best_score=float(search.best_score_),
+    )
+
+
+def _search_param_grid(policy: TrainingPolicy) -> dict[str, list[Any]]:
+    return {
+        "svc__C": [float(value) for value in policy.search_c_values],
+        "svc__gamma": list(policy.search_gamma_values),
+    }
+
+
+def _validate_search_policy(policy: TrainingPolicy, search_param_grid: dict[str, list[Any]]) -> None:
+    if not policy.search_enabled:
+        return
+    if policy.search_refit_metric not in {"macro_f1", "accuracy"}:
+        raise ValueError(
+            "TrainingPolicy.search_refit_metric must be one of ['accuracy', 'macro_f1']; "
+            f"got {policy.search_refit_metric!r}"
+        )
+    if not search_param_grid["svc__C"]:
+        raise ValueError("TrainingPolicy.search_c_values must not be empty when search_enabled=True.")
+    if not search_param_grid["svc__gamma"]:
+        raise ValueError("TrainingPolicy.search_gamma_values must not be empty when search_enabled=True.")
+
+
+def _training_policy_payload(policy: TrainingPolicy) -> dict[str, Any]:
+    return {
+        "expected_schema_version": policy.expected_schema_version,
+        "expected_feature_dimension": policy.expected_feature_dimension,
+        "required_split_status": policy.required_split_status,
+        "kernel": policy.kernel,
+        "c_value": float(policy.c_value),
+        "gamma": policy.gamma,
+        "class_weight": policy.class_weight,
+        "probability": bool(policy.probability),
+        "random_state": policy.random_state,
+        "search_enabled": bool(policy.search_enabled),
+        "search_c_values": [float(value) for value in policy.search_c_values],
+        "search_gamma_values": list(policy.search_gamma_values),
+        "search_refit_metric": policy.search_refit_metric,
+    }
+
 
 def _evaluate_split(model: Any, samples: list[dict[str, Any]]) -> SplitMetrics:
     if not samples:
-        return SplitMetrics(sample_count=0, accuracy=0.0, macro_f1=0.0)
+        return SplitMetrics(
+            sample_count=0,
+            accuracy=0.0,
+            macro_f1=0.0,
+            labels=(),
+            per_label={},
+            confusion_matrix={},
+        )
 
     x_split, y_true = _xy(samples)
     y_pred = model.predict(x_split)
+    labels = tuple(sorted({str(label) for label in y_true.tolist()} | {str(label) for label in y_pred.tolist()}))
+    precision, recall, f1_values, support = precision_recall_fscore_support(
+        y_true,
+        y_pred,
+        labels=list(labels),
+        zero_division=0,
+    )
+    per_label = {
+        label: LabelMetrics(
+            precision=float(precision[idx]),
+            recall=float(recall[idx]),
+            f1=float(f1_values[idx]),
+            support=int(support[idx]),
+        )
+        for idx, label in enumerate(labels)
+    }
+    matrix = confusion_matrix(y_true, y_pred, labels=list(labels))
+    matrix_payload = {
+        actual_label: {
+            predicted_label: int(matrix[actual_idx, predicted_idx])
+            for predicted_idx, predicted_label in enumerate(labels)
+        }
+        for actual_idx, actual_label in enumerate(labels)
+    }
     return SplitMetrics(
         sample_count=len(samples),
         accuracy=float(accuracy_score(y_true, y_pred)),
         macro_f1=float(f1_score(y_true, y_pred, average="macro", zero_division=0)),
+        labels=labels,
+        per_label=per_label,
+        confusion_matrix=matrix_payload,
     )

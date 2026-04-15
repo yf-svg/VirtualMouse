@@ -123,6 +123,8 @@ class Phase43RuntimeBundleExportTests(unittest.TestCase):
         self.assertEqual(runtime_payload["min_confidence"], 0.78)
         self.assertEqual(set(runtime_payload["labels"]), {"BRAVO", "FIST"})
         self.assertIn("validation", runtime_payload["metrics"])
+        self.assertIn("per_label", runtime_payload["metrics"]["validation"])
+        self.assertIn("BRAVO", runtime_payload["metrics"]["validation"]["confusion_matrix"])
 
     def test_classifier_rejects_training_candidate_as_runtime_model(self):
         with tempfile.TemporaryDirectory() as tmpdir:

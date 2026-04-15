@@ -36,8 +36,22 @@
   - `down/up` are `eligible` edges, not raw chosen edges
 
 ### `GestureAuth.update(gesture_label|None, now=...)`
-- out: `GestureAuthOut(authenticated, status, matched_steps, total_steps, expected_next, consumed_label, failed_attempts, max_failures, retry_after_s)`
-- invariant: consumes `eligible` edge labels only; ordered sequence + timeout + cancel reset + temporary lockout after repeated failures
+- out: `GestureAuthOut(authenticated, status, matched_steps, total_steps, expected_next, consumed_label, failed_attempts, max_failures, retry_after_s, committed_sequence, buffer_full)`
+- invariant:
+  - consumes discrete auth-enter events only, not raw live pose state
+  - owns the committed auth buffer for keypad-style entry
+  - no-hand / pause frames must not erase committed digits
+  - `BRAVO` validates the committed buffer only when the buffer is full
+  - `THUMBS_DOWN` removes only the last committed digit; `FIST` clears the buffer
+  - wrong submit may reset the buffer and enter temporary lockout after repeated failures
+
+### `AuthGestureInterpreter.update(suite_out, auth_state, hand_present=...)`
+- out: `AuthRuntimeOut(detected_gesture, event_label)`
+- invariant:
+  - auth-local gesture aliasing belongs here, not in the global classifier labels
+  - current locked aliases are `PEACE_SIGN -> TWO` and `OPEN_PALM -> FIVE` when `FIVE` exists in the configured auth sequence
+  - detected labels shown to auth UI are normalized auth symbols, while non-auth gestures stay hidden
+  - emitted auth events remain discrete and release-gated
 
 ### `ModeRouter.route_auth_edge(gesture_label|None, now=...)`
 - out: `RouteOut(state, suite_key, auth_status, auth_progress_text, auth_out)`
@@ -102,7 +116,7 @@
 ### `ScrollModeController.update(gesture_label|None, cursor_point|None, now=...)`
 - out: `ScrollOut(state, axis, intent, owns_state, movement)`
 - invariant:
-  - `PINCH_IM` toggles scroll mode only on valid edges; hold must not retrigger
+  - the configured scroll-toggle gesture (current default: `SHAKA`) toggles scroll mode only on valid edges; hold must not retrigger
   - active scroll suppresses primary/secondary progression
   - axis locks only after dead-zone exit + dominant movement margin
   - axis resets only on explicit conditions: exit, pause reset, prolonged hand loss
@@ -197,15 +211,22 @@
 
 ### `validate_recording_files(paths, ...)`
 - out: `ValidatedDataset`
-- invariant: no split leakage; validated data separate from raw recordings
+- invariant:
+  - no split leakage; validated data separate from raw recordings
+  - `split_plan.status == ok` now implies every dataset label is represented in `train`
+  - if leakage-safe three-way assignment cannot keep full train label coverage, validation must fail safe with non-`ok` split status
+  - split planning may use exhaustive or deterministic beam-search assignment, but `split_plan.planner` / `assignment_score` must stay auditable in the artifact payload
 
 ### `train_svm_from_validated_dataset(dataset_path, ...)`
 - in: validated dataset artifact only
 - out: candidate model artifact + training report
 - invariant:
   - requires `split_status == ok`
+  - requires full train label coverage for every dataset label
   - requires `phase3.v2` + fixed dimension
-  - grouped CV search runs on `train` users only when feasible
+  - grouped CV search runs on `train` users only when a group-aware plan preserves label coverage in every train fold
+  - search skip/failure reasons must be explicit in the report/model payload; unexpected grouped-search failures must not silently degrade
+  - training report metrics must stay structured enough for audit/export: split-level accuracy + macro-F1, per-label precision/recall/F1/support, and confusion-matrix counts
   - writes `training_candidate`; not runtime-approved directly
 
 ### `export_runtime_model_bundle(candidate_model_path, ...)`

@@ -189,34 +189,103 @@ class Phase41ValidationEngineTests(unittest.TestCase):
     def test_split_assignment_keeps_users_isolated(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             paths: list[Path] = []
+            for user_offset, user_id in enumerate(("U01", "U02", "U03")):
+                for gesture_idx, gesture_label in enumerate(("FIST", "BRAVO", "OPEN_PALM")):
+                    path = Path(tmpdir) / f"{gesture_label}_{user_id}.json"
+                    payload = _session_payload(
+                        gesture_label=gesture_label,
+                        user_id=user_id,
+                        session_id=f"sess_{gesture_label}_{user_id}",
+                        samples=[
+                            _sample_payload(
+                                gesture_label=gesture_label,
+                                user_id=user_id,
+                                session_id=f"sess_{gesture_label}_{user_id}",
+                                sample_index=idx,
+                                feature_values=_feature_vector(
+                                    seed=(user_offset * 0.10) + (gesture_idx * 0.03) + (idx + 1) * 0.005
+                                ),
+                            )
+                            for idx in range(2)
+                        ],
+                    )
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    paths.append(path)
+
+            dataset = validate_recording_files(paths, apply_outlier_filter=False)
+
+        self.assertEqual(dataset.split_plan.status, "ok")
+        self.assertEqual(dataset.split_plan.planner, "exhaustive")
+        self.assertIsNotNone(dataset.split_plan.assignment_score)
+        splits_by_user = {}
+        for sample in dataset.validated_samples:
+            splits_by_user.setdefault(sample.user_id, set()).add(sample.split)
+        self.assertTrue(all(len(splits) == 1 for splits in splits_by_user.values()))
+        self.assertEqual({next(iter(s)) for s in splits_by_user.values()}, {"train", "validation", "test"})
+        train_labels = {
+            sample.gesture_label
+            for sample in dataset.validated_samples
+            if sample.split == "train"
+        }
+        self.assertEqual(train_labels, {"FIST", "BRAVO", "OPEN_PALM"})
+
+    def test_split_assignment_uses_beam_search_for_larger_user_sets_and_records_policy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths: list[Path] = []
+            for user_offset, user_id in enumerate(("U01", "U02", "U03", "U04")):
+                for gesture_idx, gesture_label in enumerate(("FIST", "BRAVO", "OPEN_PALM")):
+                    path = Path(tmpdir) / f"{gesture_label}_{user_id}.json"
+                    payload = _session_payload(
+                        gesture_label=gesture_label,
+                        user_id=user_id,
+                        session_id=f"sess_{gesture_label}_{user_id}",
+                        samples=[
+                            _sample_payload(
+                                gesture_label=gesture_label,
+                                user_id=user_id,
+                                session_id=f"sess_{gesture_label}_{user_id}",
+                                sample_index=idx,
+                                feature_values=_feature_vector(
+                                    seed=(user_offset * 0.08) + (gesture_idx * 0.02) + (idx + 1) * 0.004
+                                ),
+                            )
+                            for idx in range(2)
+                        ],
+                    )
+                    path.write_text(json.dumps(payload), encoding="utf-8")
+                    paths.append(path)
+
+            dataset = validate_recording_files(
+                paths,
+                policy=ValidationPolicy(split_planner_exhaustive_max_users=2, split_planner_beam_width=10),
+                apply_outlier_filter=False,
+            )
+
+        self.assertEqual(dataset.split_plan.status, "ok")
+        self.assertEqual(dataset.split_plan.planner, "beam_search")
+        self.assertIsNotNone(dataset.split_plan.assignment_score)
+        self.assertEqual(dataset.policy["split_planner_exhaustive_max_users"], 2)
+        self.assertEqual(dataset.policy["split_planner_beam_width"], 10)
+        self.assertEqual({sample.split for sample in dataset.validated_samples}, {"train", "validation", "test"})
+
+    def test_split_assignment_reports_insufficient_train_label_coverage_when_labels_are_user_isolated(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths: list[Path] = []
             for user_id, gesture_label in (("U01", "FIST"), ("U02", "BRAVO"), ("U03", "OPEN_PALM")):
                 path = Path(tmpdir) / f"{gesture_label}_{user_id}.json"
                 payload = _session_payload(
                     gesture_label=gesture_label,
                     user_id=user_id,
                     session_id=f"sess_{user_id}",
-                    samples=[
-                        _sample_payload(
-                            gesture_label=gesture_label,
-                            user_id=user_id,
-                            session_id=f"sess_{user_id}",
-                            sample_index=idx,
-                            feature_values=_feature_vector(seed=(idx + 1) * 0.01),
-                        )
-                        for idx in range(2)
-                    ],
+                    samples=[_sample_payload(gesture_label=gesture_label, user_id=user_id, session_id=f"sess_{user_id}", sample_index=0)],
                 )
                 path.write_text(json.dumps(payload), encoding="utf-8")
                 paths.append(path)
 
             dataset = validate_recording_files(paths, apply_outlier_filter=False)
 
-        self.assertEqual(dataset.split_plan.status, "ok")
-        splits_by_user = {}
-        for sample in dataset.validated_samples:
-            splits_by_user.setdefault(sample.user_id, set()).add(sample.split)
-        self.assertTrue(all(len(splits) == 1 for splits in splits_by_user.values()))
-        self.assertEqual({next(iter(s)) for s in splits_by_user.values()}, {"train", "validation", "test"})
+        self.assertEqual(dataset.split_plan.status, "insufficient_train_label_coverage")
+        self.assertEqual(dataset.summary["split_status"], "insufficient_train_label_coverage")
 
     def test_split_assignment_reports_insufficient_users_for_three_way_split(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -240,8 +309,21 @@ class Phase41ValidationEngineTests(unittest.TestCase):
         strategy_name, n_splits = build_group_cv_strategy(num_users=4)
         self.assertEqual(strategy_name, "StratifiedGroupKFold")
         self.assertEqual(n_splits, 4)
-        cv = instantiate_group_cv(labels=["FIST", "BRAVO", "OPEN_PALM"], groups=["U01", "U02", "U03"])
+        cv = instantiate_group_cv(
+            labels=["FIST", "BRAVO", "OPEN_PALM", "FIST", "BRAVO", "OPEN_PALM"],
+            groups=["U01", "U01", "U01", "U02", "U02", "U02"],
+        )
+        self.assertEqual(cv.__class__.__name__, "GroupKFold")
+        cv = instantiate_group_cv(
+            labels=["FIST", "BRAVO", "OPEN_PALM", "FIST", "BRAVO", "OPEN_PALM", "FIST", "BRAVO", "OPEN_PALM"],
+            groups=["U01", "U01", "U01", "U02", "U02", "U02", "U03", "U03", "U03"],
+        )
         self.assertEqual(cv.__class__.__name__, "StratifiedGroupKFold")
+        with self.assertRaises(ValueError):
+            instantiate_group_cv(
+                labels=["FIST", "FIST", "BRAVO", "BRAVO"],
+                groups=["U01", "U02", "U01", "U01"],
+            )
 
     def test_save_validated_dataset_writes_payload(self):
         with tempfile.TemporaryDirectory() as tmpdir:

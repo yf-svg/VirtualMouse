@@ -44,6 +44,7 @@ class GestureSuite:
         prediction_gate_cfg: PredictionGateCfg | None = None,
         allowed: Iterable[str] | None = None,
         priority: Iterable[str] | None = None,
+        allow_priority: bool = False,
     ):
         allowed_labels = set(allowed) if allowed is not None else OPS_ALLOWED
         priority_labels = list(priority) if priority is not None else OPS_PRIORITY
@@ -52,7 +53,7 @@ class GestureSuite:
             runtime_temporal_cfg,
             allowed=allowed_labels,
             priority=priority_labels,
-            allow_priority=False,
+            allow_priority=allow_priority,
         )
         self.classifier = classifier or SVMClassifier(allowed=allowed_labels)
         self.prediction_gate = PredictionGate(prediction_gate_cfg)

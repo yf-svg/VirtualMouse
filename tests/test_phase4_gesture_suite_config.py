@@ -15,11 +15,14 @@ class GestureSuiteConfigTests(unittest.TestCase):
     def test_ops_set_includes_thumbs_down(self):
         self.assertIn("THUMBS_DOWN", OPS_ALLOWED)
         self.assertIn("THUMBS_DOWN", OPS_PRIORITY)
+        self.assertIn("SHAKA", OPS_ALLOWED)
+        self.assertIn("SHAKA", OPS_PRIORITY)
 
     def test_runtime_gesture_suite_allows_thumbs_down(self):
         suite = GestureSuite()
         self.assertIsNotNone(suite.engine.allowed)
         self.assertIn("THUMBS_DOWN", suite.engine.allowed)
+        self.assertIn("SHAKA", suite.engine.allowed)
         self.assertEqual(suite.engine.allowed, OPS_ALLOWED)
 
 

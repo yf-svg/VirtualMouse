@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from itertools import product
 from pathlib import Path
@@ -40,6 +40,8 @@ class ValidationPolicy:
     min_users_for_disjoint_split: int = 3
     split_ratios: tuple[float, float, float] = (0.70, 0.15, 0.15)
     split_names: tuple[str, str, str] = ("train", "validation", "test")
+    split_planner_exhaustive_max_users: int = 8
+    split_planner_beam_width: int = 64
     random_state: int = 42
 
 
@@ -95,6 +97,22 @@ class DatasetSplitPlan:
     issues: tuple[ValidationIssue, ...] = ()
     cv_strategy: str | None = None
     cv_n_splits: int | None = None
+    planner: str | None = None
+    assignment_score: float | None = None
+
+
+@dataclass(frozen=True)
+class GroupCvPlan:
+    status: str
+    strategy: str | None
+    n_splits: int | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class _SplitSearchState:
+    assignments: dict[str, str]
+    score: float
 
 
 @dataclass(frozen=True)
@@ -124,6 +142,8 @@ class ValidatedDataset:
                 "issues": [asdict(issue) for issue in self.split_plan.issues],
                 "cv_strategy": self.split_plan.cv_strategy,
                 "cv_n_splits": self.split_plan.cv_n_splits,
+                "planner": self.split_plan.planner,
+                "assignment_score": self.split_plan.assignment_score,
             },
             "summary": dict(self.summary),
         }
@@ -155,10 +175,105 @@ def build_group_cv_strategy(*, num_users: int) -> tuple[str, int]:
 
 
 def instantiate_group_cv(*, labels: list[str], groups: list[str], random_state: int = 42):
-    strategy_name, n_splits = build_group_cv_strategy(num_users=len(set(groups)))
+    plan = resolve_group_cv_plan(labels=labels, groups=groups, random_state=random_state)
+    if plan.status != "ok" or plan.strategy is None or plan.n_splits is None:
+        raise ValueError(plan.reason)
+    return _build_group_cv(plan.strategy, plan.n_splits, random_state=random_state)
+
+
+def resolve_group_cv_plan(*, labels: list[str], groups: list[str], random_state: int = 42) -> GroupCvPlan:
+    labels_arr = np.asarray([str(label) for label in labels], dtype=object)
+    groups_arr = np.asarray([str(group) for group in groups], dtype=object)
+
+    if labels_arr.size == 0 or groups_arr.size == 0:
+        return GroupCvPlan(
+            status="unavailable",
+            strategy=None,
+            n_splits=None,
+            reason="group_cv_requires_non_empty_labels_and_groups",
+        )
+    if labels_arr.size != groups_arr.size:
+        return GroupCvPlan(
+            status="unavailable",
+            strategy=None,
+            n_splits=None,
+            reason="group_cv_requires_labels_and_groups_with_equal_length",
+        )
+
+    unique_groups = sorted({str(group) for group in groups_arr.tolist()})
+    if len(unique_groups) < 2:
+        return GroupCvPlan(
+            status="unavailable",
+            strategy=None,
+            n_splits=None,
+            reason="group_cv_requires_at_least_two_distinct_users",
+        )
+
+    unique_labels = sorted({str(label) for label in labels_arr.tolist()})
+    x_dummy = np.zeros((labels_arr.size, 1), dtype=np.uint8)
+
+    for strategy_name, n_splits in _candidate_group_cv_specs(num_groups=len(unique_groups)):
+        cv = _build_group_cv(strategy_name, n_splits, random_state=random_state)
+        try:
+            splits = list(cv.split(x_dummy, labels_arr, groups_arr))
+        except ValueError:
+            continue
+        if _cv_preserves_train_label_coverage(splits, labels_arr, required_labels=unique_labels):
+            return GroupCvPlan(
+                status="ok",
+                strategy=strategy_name,
+                n_splits=n_splits,
+                reason="validated_fold_train_label_coverage",
+            )
+
+    label_group_counts = {
+        label: len({group for current_label, group in zip(labels_arr.tolist(), groups_arr.tolist()) if current_label == label})
+        for label in unique_labels
+    }
+    min_label_groups = min(label_group_counts.values()) if label_group_counts else 0
+    return GroupCvPlan(
+        status="unavailable",
+        strategy=None,
+        n_splits=None,
+        reason=(
+            "no_group_cv_strategy_preserves_train_label_coverage:"
+            f"users={len(unique_groups)}:min_label_groups={min_label_groups}"
+        ),
+    )
+
+
+def _candidate_group_cv_specs(*, num_groups: int) -> list[tuple[str, int]]:
+    max_splits = min(5, int(num_groups))
+    specs: list[tuple[str, int]] = []
+    for n_splits in range(max_splits, 2, -1):
+        specs.append(("StratifiedGroupKFold", n_splits))
+    for n_splits in range(max_splits, 1, -1):
+        specs.append(("GroupKFold", n_splits))
+    return specs
+
+
+def _build_group_cv(strategy_name: str, n_splits: int, *, random_state: int):
     if strategy_name == "StratifiedGroupKFold":
         return StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-    return GroupKFold(n_splits=n_splits)
+    if strategy_name == "GroupKFold":
+        return GroupKFold(n_splits=n_splits)
+    raise ValueError(f"Unsupported group CV strategy: {strategy_name}")
+
+
+def _cv_preserves_train_label_coverage(
+    splits: list[tuple[np.ndarray, np.ndarray]],
+    labels: np.ndarray,
+    *,
+    required_labels: list[str],
+) -> bool:
+    required = set(required_labels)
+    if not required:
+        return False
+    for train_idx, _test_idx in splits:
+        train_labels = {str(label) for label in labels[train_idx].tolist()}
+        if train_labels != required:
+            return False
+    return True
 
 
 def validate_recording_files(
@@ -511,16 +626,13 @@ def _plan_group_splits(samples: list[ValidatedSample], policy: ValidationPolicy)
         )
 
     users = sorted({sample.user_id for sample in samples})
-    cv_strategy = None
-    cv_n_splits = None
-    try:
-        cv_strategy, cv_n_splits = build_group_cv_strategy(num_users=len(users))
-    except ValueError as exc:
-        return DatasetSplitPlan(
-            status="insufficient_users",
-            assignments={},
-            issues=(ValidationIssue("insufficient_users_for_cv", str(exc)),),
-        )
+    cv_plan = resolve_group_cv_plan(
+        labels=[sample.gesture_label for sample in samples],
+        groups=[sample.user_id for sample in samples],
+        random_state=policy.random_state,
+    )
+    cv_strategy = cv_plan.strategy
+    cv_n_splits = cv_plan.n_splits
 
     if len(users) < policy.min_users_for_disjoint_split:
         return DatasetSplitPlan(
@@ -551,41 +663,61 @@ def _plan_group_splits(samples: list[ValidatedSample], policy: ValidationPolicy)
         for label in labels
     }
     total_samples = len(samples)
+    train_coverage_possible = _can_cover_all_labels_in_train(
+        users=users,
+        labels=labels,
+        label_counts=label_counts,
+        split_names=split_names,
+    )
 
-    best_assignment: dict[str, str] | None = None
-    best_score: float | None = None
-    for split_indexes in product(range(len(split_names)), repeat=len(users)):
-        if len(set(split_indexes)) != len(split_names):
-            continue
-        assignment = {user: split_names[idx] for user, idx in zip(users, split_indexes)}
-        split_sample_counts = {split: 0 for split in split_names}
-        split_label_counts = {split: {label: 0 for label in labels} for split in split_names}
-        for user, split in assignment.items():
-            split_sample_counts[split] += user_counts[user]
-            for label, count in label_counts[user].items():
-                split_label_counts[split][label] += count
-
-        if split_sample_counts["train"] == 0:
-            continue
-        score = 0.0
-        for split_idx, split in enumerate(split_names):
-            observed_ratio = split_sample_counts[split] / max(total_samples, 1)
-            score += abs(observed_ratio - target_ratios[split_idx]) * 2.5
-            for label in labels:
-                overall_ratio = total_label_counts[label] / max(total_samples, 1)
-                label_ratio = split_label_counts[split][label] / max(split_sample_counts[split], 1)
-                score += abs(label_ratio - overall_ratio)
-        if best_score is None or score < best_score:
-            best_score = score
-            best_assignment = assignment
+    if len(users) <= max(1, int(policy.split_planner_exhaustive_max_users)):
+        planner_name = "exhaustive"
+        best_assignment, best_score = _find_best_split_assignment_exhaustive(
+            users=users,
+            split_names=split_names,
+            labels=labels,
+            user_counts=user_counts,
+            label_counts=label_counts,
+            total_label_counts=total_label_counts,
+            total_samples=total_samples,
+            target_ratios=target_ratios,
+        )
+    else:
+        planner_name = "beam_search"
+        best_assignment, best_score = _find_best_split_assignment_beam(
+            users=users,
+            split_names=split_names,
+            labels=labels,
+            user_counts=user_counts,
+            label_counts=label_counts,
+            total_label_counts=total_label_counts,
+            total_samples=total_samples,
+            target_ratios=target_ratios,
+            beam_width=max(4, int(policy.split_planner_beam_width)),
+        )
 
     if best_assignment is None:
+        if not train_coverage_possible:
+            return DatasetSplitPlan(
+                status="insufficient_train_label_coverage",
+                assignments={},
+                issues=(
+                    ValidationIssue(
+                        "insufficient_train_label_coverage",
+                        "Could not assign leakage-safe train/validation/test splits while keeping every label represented in train.",
+                    ),
+                ),
+                cv_strategy=cv_strategy,
+                cv_n_splits=cv_n_splits,
+                planner=planner_name,
+            )
         return DatasetSplitPlan(
             status="split_failed",
             assignments={},
             issues=(ValidationIssue("split_failed", "Could not find a leakage-safe user split plan."),),
             cv_strategy=cv_strategy,
             cv_n_splits=cv_n_splits,
+            planner=planner_name,
         )
 
     sample_assignments = {
@@ -597,7 +729,324 @@ def _plan_group_splits(samples: list[ValidatedSample], policy: ValidationPolicy)
         assignments=sample_assignments,
         cv_strategy=cv_strategy,
         cv_n_splits=cv_n_splits,
+        planner=planner_name,
+        assignment_score=best_score,
     )
+
+
+def _find_best_split_assignment_exhaustive(
+    *,
+    users: list[str],
+    split_names: tuple[str, ...],
+    labels: list[str],
+    user_counts: dict[str, int],
+    label_counts: dict[str, dict[str, int]],
+    total_label_counts: dict[str, int],
+    total_samples: int,
+    target_ratios: np.ndarray,
+) -> tuple[dict[str, str] | None, float | None]:
+    best_assignment: dict[str, str] | None = None
+    best_score: float | None = None
+    for split_indexes in product(range(len(split_names)), repeat=len(users)):
+        if len(set(split_indexes)) != len(split_names):
+            continue
+        assignment = {user: split_names[idx] for user, idx in zip(users, split_indexes)}
+        if not _assignment_has_full_train_label_coverage(
+            assignment=assignment,
+            labels=labels,
+            label_counts=label_counts,
+        ):
+            continue
+        score = _score_full_assignment(
+            assignment=assignment,
+            split_names=split_names,
+            labels=labels,
+            user_counts=user_counts,
+            label_counts=label_counts,
+            total_label_counts=total_label_counts,
+            total_samples=total_samples,
+            target_ratios=target_ratios,
+        )
+        if best_score is None or score < best_score:
+            best_assignment = assignment
+            best_score = score
+    return best_assignment, best_score
+
+
+def _find_best_split_assignment_beam(
+    *,
+    users: list[str],
+    split_names: tuple[str, ...],
+    labels: list[str],
+    user_counts: dict[str, int],
+    label_counts: dict[str, dict[str, int]],
+    total_label_counts: dict[str, int],
+    total_samples: int,
+    target_ratios: np.ndarray,
+    beam_width: int,
+) -> tuple[dict[str, str] | None, float | None]:
+    if not users:
+        return None, None
+
+    ordered_users = _order_users_for_split_planning(
+        users=users,
+        label_counts=label_counts,
+        total_label_counts=total_label_counts,
+        user_counts=user_counts,
+    )
+    remaining_label_union = _remaining_label_union_by_user_order(ordered_users, label_counts)
+    states = [_SplitSearchState(assignments={}, score=0.0)]
+
+    for user_index, user_id in enumerate(ordered_users):
+        next_states: list[_SplitSearchState] = []
+        for state in states:
+            for split_name in split_names:
+                assignment = dict(state.assignments)
+                assignment[user_id] = split_name
+                if not _partial_assignment_is_feasible(
+                    assignment=assignment,
+                    split_names=split_names,
+                    labels=labels,
+                    remaining_label_union=remaining_label_union[user_index + 1],
+                    remaining_users=len(ordered_users) - user_index - 1,
+                    label_counts=label_counts,
+                ):
+                    continue
+                score = _score_partial_assignment(
+                    assignment=assignment,
+                    split_names=split_names,
+                    labels=labels,
+                    user_counts=user_counts,
+                    label_counts=label_counts,
+                    total_label_counts=total_label_counts,
+                    total_samples=total_samples,
+                    target_ratios=target_ratios,
+                    remaining_users=len(ordered_users) - user_index - 1,
+                )
+                next_states.append(_SplitSearchState(assignments=assignment, score=score))
+        if not next_states:
+            return None, None
+        next_states.sort(key=lambda state: (state.score, tuple(sorted(state.assignments.items()))))
+        states = next_states[:beam_width]
+
+    best_assignment: dict[str, str] | None = None
+    best_score: float | None = None
+    for state in states:
+        assignment = state.assignments
+        if len(set(assignment.values())) != len(split_names):
+            continue
+        if not _assignment_has_full_train_label_coverage(
+            assignment=assignment,
+            labels=labels,
+            label_counts=label_counts,
+        ):
+            continue
+        score = _score_full_assignment(
+            assignment=assignment,
+            split_names=split_names,
+            labels=labels,
+            user_counts=user_counts,
+            label_counts=label_counts,
+            total_label_counts=total_label_counts,
+            total_samples=total_samples,
+            target_ratios=target_ratios,
+        )
+        if best_score is None or score < best_score:
+            best_assignment = assignment
+            best_score = score
+    return best_assignment, best_score
+
+
+def _can_cover_all_labels_in_train(
+    *,
+    users: list[str],
+    labels: list[str],
+    label_counts: dict[str, dict[str, int]],
+    split_names: tuple[str, ...],
+) -> bool:
+    if not labels:
+        return False
+    max_train_users = len(users) - (len(split_names) - 1)
+    if max_train_users <= 0:
+        return False
+    label_index = {label: idx for idx, label in enumerate(labels)}
+    user_masks = []
+    for user in users:
+        mask = 0
+        for label in label_counts[user]:
+            mask |= 1 << label_index[label]
+        user_masks.append(mask)
+    full_mask = (1 << len(labels)) - 1
+    reachable = {0: 0}
+    for user_mask in user_masks:
+        updates: dict[int, int] = {}
+        for current_mask, used_users in list(reachable.items()):
+            if used_users >= max_train_users:
+                continue
+            new_mask = current_mask | user_mask
+            new_used = used_users + 1
+            if new_used < updates.get(new_mask, new_used + 1):
+                updates[new_mask] = new_used
+        for mask, used_users in updates.items():
+            if used_users < reachable.get(mask, used_users + 1):
+                reachable[mask] = used_users
+    return reachable.get(full_mask, max_train_users + 1) <= max_train_users
+
+
+def _assignment_has_full_train_label_coverage(
+    *,
+    assignment: dict[str, str],
+    labels: list[str],
+    label_counts: dict[str, dict[str, int]],
+) -> bool:
+    train_labels = {
+        label
+        for user_id, split_name in assignment.items()
+        if split_name == "train"
+        for label in label_counts[user_id]
+    }
+    return train_labels == set(labels)
+
+
+def _assignment_counts(
+    *,
+    assignment: dict[str, str],
+    split_names: tuple[str, ...],
+    labels: list[str],
+    user_counts: dict[str, int],
+    label_counts: dict[str, dict[str, int]],
+) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+    split_sample_counts = {split_name: 0 for split_name in split_names}
+    split_label_counts = {split_name: {label: 0 for label in labels} for split_name in split_names}
+    for user_id, split_name in assignment.items():
+        split_sample_counts[split_name] += user_counts[user_id]
+        for label, count in label_counts[user_id].items():
+            split_label_counts[split_name][label] += count
+    return split_sample_counts, split_label_counts
+
+
+def _score_full_assignment(
+    *,
+    assignment: dict[str, str],
+    split_names: tuple[str, ...],
+    labels: list[str],
+    user_counts: dict[str, int],
+    label_counts: dict[str, dict[str, int]],
+    total_label_counts: dict[str, int],
+    total_samples: int,
+    target_ratios: np.ndarray,
+) -> float:
+    split_sample_counts, split_label_counts = _assignment_counts(
+        assignment=assignment,
+        split_names=split_names,
+        labels=labels,
+        user_counts=user_counts,
+        label_counts=label_counts,
+    )
+    score = 0.0
+    for split_idx, split_name in enumerate(split_names):
+        observed_ratio = split_sample_counts[split_name] / max(total_samples, 1)
+        score += abs(observed_ratio - target_ratios[split_idx]) * 2.5
+        for label in labels:
+            overall_ratio = total_label_counts[label] / max(total_samples, 1)
+            label_ratio = split_label_counts[split_name][label] / max(split_sample_counts[split_name], 1)
+            score += abs(label_ratio - overall_ratio)
+    return score
+
+
+def _score_partial_assignment(
+    *,
+    assignment: dict[str, str],
+    split_names: tuple[str, ...],
+    labels: list[str],
+    user_counts: dict[str, int],
+    label_counts: dict[str, dict[str, int]],
+    total_label_counts: dict[str, int],
+    total_samples: int,
+    target_ratios: np.ndarray,
+    remaining_users: int,
+) -> float:
+    split_sample_counts, split_label_counts = _assignment_counts(
+        assignment=assignment,
+        split_names=split_names,
+        labels=labels,
+        user_counts=user_counts,
+        label_counts=label_counts,
+    )
+    score = 0.0
+    for split_idx, split_name in enumerate(split_names):
+        observed_ratio = split_sample_counts[split_name] / max(total_samples, 1)
+        score += abs(observed_ratio - target_ratios[split_idx]) * 2.5
+        for label in labels:
+            overall_ratio = total_label_counts[label] / max(total_samples, 1)
+            label_ratio = split_label_counts[split_name][label] / max(split_sample_counts[split_name], 1)
+            score += abs(label_ratio - overall_ratio)
+
+    train_labels = {
+        label
+        for user_id, split_name in assignment.items()
+        if split_name == "train"
+        for label in label_counts[user_id]
+    }
+    missing_train_labels = len(set(labels) - train_labels)
+    unused_splits = len(set(split_names) - set(assignment.values()))
+    score += missing_train_labels * 4.0
+    score += unused_splits * 1.5
+    score += remaining_users * 0.01
+    return score
+
+
+def _order_users_for_split_planning(
+    *,
+    users: list[str],
+    label_counts: dict[str, dict[str, int]],
+    total_label_counts: dict[str, int],
+    user_counts: dict[str, int],
+) -> list[str]:
+    def _key(user_id: str) -> tuple[float, int, str]:
+        rarity_score = 0.0
+        for label, count in label_counts[user_id].items():
+            rarity_score += float(count) / max(1, total_label_counts[label])
+        return (-rarity_score, -user_counts[user_id], user_id)
+
+    return sorted(users, key=_key)
+
+
+def _remaining_label_union_by_user_order(
+    ordered_users: list[str],
+    label_counts: dict[str, dict[str, int]],
+) -> list[set[str]]:
+    unions: list[set[str]] = [set() for _ in range(len(ordered_users) + 1)]
+    for idx in range(len(ordered_users) - 1, -1, -1):
+        unions[idx] = set(unions[idx + 1]) | set(label_counts[ordered_users[idx]])
+    return unions
+
+
+def _partial_assignment_is_feasible(
+    *,
+    assignment: dict[str, str],
+    split_names: tuple[str, ...],
+    labels: list[str],
+    remaining_label_union: set[str],
+    remaining_users: int,
+    label_counts: dict[str, dict[str, int]],
+) -> bool:
+    used_splits = set(assignment.values())
+    if len(set(split_names) - used_splits) > remaining_users:
+        return False
+
+    train_labels = {
+        label
+        for user_id, split_name in assignment.items()
+        if split_name == "train"
+        for label in label_counts[user_id]
+    }
+    if (train_labels | remaining_label_union) != set(labels):
+        return False
+
+    if remaining_users == 0:
+        return len(used_splits) == len(split_names) and train_labels == set(labels)
+    return True
 
 
 def _build_summary(
@@ -648,5 +1097,7 @@ def _policy_payload(policy: ValidationPolicy) -> dict[str, Any]:
         "min_users_for_disjoint_split": policy.min_users_for_disjoint_split,
         "split_ratios": list(policy.split_ratios),
         "split_names": list(policy.split_names),
+        "split_planner_exhaustive_max_users": int(policy.split_planner_exhaustive_max_users),
+        "split_planner_beam_width": int(policy.split_planner_beam_width),
         "random_state": policy.random_state,
     }

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from app.constants import AppState
 from app.lifecycle.state_machine import StateMachine
-from app.security.auth import GestureAuth, GestureAuthCfg, GestureAuthOut
+from app.security.auth import AuthInputState, GestureAuth, GestureAuthCfg, GestureAuthOut
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,10 @@ class ModeRouter:
     def current_auth_expected_next(self) -> str | None:
         return self._auth.current_expected_next
 
+    @property
+    def current_auth_input_state(self) -> AuthInputState:
+        return self._auth.current_input_state
+
     @staticmethod
     def _format_auth_progress(auth_out: GestureAuthOut) -> str:
         if auth_out.status == "locked_out":
@@ -58,6 +62,8 @@ class ModeRouter:
             failed_attempts=0,
             max_failures=self._auth.cfg.max_failures,
             retry_after_s=None,
+            committed_sequence=(),
+            buffer_full=False,
         )
 
     def _suite_key(self) -> str:
@@ -72,24 +78,13 @@ class ModeRouter:
     def route_auth_edge(self, gesture_label: str | None, *, now: float | None = None) -> RouteOut:
         auth_out = self._auth.update(gesture_label, now=time.monotonic() if now is None else now)
 
-        if auth_out.status in {"started", "progress", "step_back"} and self.state == AppState.IDLE_LOCKED:
+        if auth_out.status in {"started", "progress", "step_back", "ready_to_submit"} and self.state == AppState.IDLE_LOCKED:
             self._sm.set_state(AppState.AUTHENTICATING)
         elif auth_out.status == "locked_out" and self.state == AppState.AUTHENTICATING:
             self._sm.set_state(AppState.IDLE_LOCKED)
         elif auth_out.status == "success":
             self._sm.set_state(AppState.ACTIVE_GENERAL)
             self._auth.reset()
-            auth_out = GestureAuthOut(
-                authenticated=False,
-                status="success",
-                matched_steps=0,
-                total_steps=auth_out.total_steps,
-                expected_next=None,
-                consumed_label=auth_out.consumed_label,
-                failed_attempts=0,
-                max_failures=auth_out.max_failures,
-                retry_after_s=None,
-            )
 
         progress_text = "Auth complete" if auth_out.status == "success" else self._format_auth_progress(auth_out)
         return RouteOut(

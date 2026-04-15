@@ -23,6 +23,9 @@ def snapshot_to_candidates(s: GestureSnapshot) -> Set[str]:
     if s.open_palm:
         c.add("OPEN_PALM")
 
+    if s.shaka:
+        c.add("SHAKA")
+
     if s.peace_sign:
         c.add("PEACE_SIGN")
 

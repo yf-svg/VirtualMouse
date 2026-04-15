@@ -3,7 +3,8 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from app.security.auth import GestureAuthCfg
+from app.gestures.sets.auth_set import auth_allowed_for_cfg, auth_priority_for_cfg
+from app.security.auth import AuthInputState, GestureAuthCfg
 from app.security.auth_runtime import AuthGestureInterpreter
 
 
@@ -51,200 +52,218 @@ def _suite_out(
     )
 
 
+def _auth_state(
+    *,
+    committed_sequence: tuple[str, ...] = (),
+    max_length: int = 3,
+    locked_out: bool = False,
+) -> AuthInputState:
+    return AuthInputState(
+        committed_sequence=committed_sequence,
+        max_length=max_length,
+        accepting_digits=len(committed_sequence) < max_length,
+        ready_to_submit=len(committed_sequence) == max_length,
+        locked_out=locked_out,
+    )
+
+
 class AuthGestureInterpreterTests(unittest.TestCase):
-    def test_detected_label_is_auth_only(self):
+    def test_peace_sign_aliases_to_two_in_auth_mode(self):
+        interpreter = AuthGestureInterpreter()
+
+        first = interpreter.update(
+            suite_out=_suite_out(chosen="PEACE_SIGN", stable="PEACE_SIGN", eligible=None),
+            auth_state=_auth_state(),
+        )
+        second = interpreter.update(
+            suite_out=_suite_out(chosen="PEACE_SIGN", stable="PEACE_SIGN", eligible="PEACE_SIGN"),
+            auth_state=_auth_state(),
+        )
+        third = interpreter.update(
+            suite_out=_suite_out(chosen="PEACE_SIGN", stable="PEACE_SIGN", eligible="PEACE_SIGN"),
+            auth_state=_auth_state(),
+        )
+
+        self.assertEqual(first.detected_gesture, "TWO")
+        self.assertEqual(second.detected_gesture, "TWO")
+        self.assertIsNone(second.event_label)
+        self.assertEqual(third.event_label, "TWO")
+
+    def test_non_auth_gesture_still_stays_hidden(self):
         interpreter = AuthGestureInterpreter()
 
         out = interpreter.update(
-            suite_out=_suite_out(chosen="PEACE_SIGN", stable="PEACE_SIGN", eligible=None),
-            expected_next="TWO",
+            suite_out=_suite_out(chosen="SHAKA", stable="SHAKA", eligible="SHAKA"),
+            auth_state=_auth_state(),
         )
 
         self.assertIsNone(out.detected_gesture)
         self.assertIsNone(out.event_label)
 
-    def test_expected_digit_emits_on_first_eligible_auth_frame(self):
+    def test_digit_emits_after_confirmation_frames(self):
         interpreter = AuthGestureInterpreter()
 
         first = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
         )
-        out = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
+        second = interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
         )
 
-        self.assertEqual(first.detected_gesture, "TWO")
+        self.assertEqual(first.detected_gesture, "ONE")
         self.assertIsNone(first.event_label)
-        self.assertEqual(out.event_label, "TWO")
+        self.assertEqual(second.event_label, "ONE")
 
-    def test_expected_next_digit_requires_release_after_previous_digit_commit(self):
+    def test_next_digit_requires_release_between_commits(self):
         interpreter = AuthGestureInterpreter()
 
         interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
+        )
+        committed = interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
+        )
+        blocked = interpreter.update(
             suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
+            auth_state=_auth_state(committed_sequence=("ONE",)),
         )
-        first = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
-        )
-        chained1 = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
-        )
-        chained2 = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
-        )
-        release1 = interpreter.update(
+        release_1 = interpreter.update(
             suite_out=_suite_out(chosen=None, stable=None, eligible=None),
-            expected_next="THREE",
+            auth_state=_auth_state(committed_sequence=("ONE",)),
         )
-        release2 = interpreter.update(
+        release_2 = interpreter.update(
             suite_out=_suite_out(chosen=None, stable=None, eligible=None),
-            expected_next="THREE",
+            auth_state=_auth_state(committed_sequence=("ONE",)),
         )
         warm = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
+            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
+            auth_state=_auth_state(committed_sequence=("ONE",)),
         )
         next_digit = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
+            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
+            auth_state=_auth_state(committed_sequence=("ONE",)),
         )
 
-        self.assertEqual(first.event_label, "TWO")
-        self.assertIsNone(chained1.event_label)
-        self.assertIsNone(chained2.event_label)
-        self.assertIsNone(release1.event_label)
-        self.assertIsNone(release2.event_label)
+        self.assertEqual(committed.event_label, "ONE")
+        self.assertIsNone(blocked.event_label)
+        self.assertIsNone(release_1.event_label)
+        self.assertIsNone(release_2.event_label)
         self.assertIsNone(warm.event_label)
-        self.assertEqual(next_digit.event_label, "THREE")
+        self.assertEqual(next_digit.event_label, "TWO")
 
-    def test_transient_thumbs_down_requires_extra_confirmation(self):
+    def test_same_held_digit_only_emits_once_until_released(self):
+        interpreter = AuthGestureInterpreter()
+
+        interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
+        )
+        first = interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
+        )
+        held = interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(committed_sequence=("ONE",)),
+        )
+
+        self.assertEqual(first.event_label, "ONE")
+        self.assertIsNone(held.event_label)
+
+    def test_back_requires_confirmation_and_emits_without_digit_release(self):
         interpreter = AuthGestureInterpreter()
 
         first = interpreter.update(
             suite_out=_suite_out(chosen="THUMBS_DOWN", stable="THUMBS_DOWN", eligible="THUMBS_DOWN"),
-            expected_next="THREE",
+            auth_state=_auth_state(committed_sequence=("ONE", "TWO")),
         )
         second = interpreter.update(
             suite_out=_suite_out(chosen="THUMBS_DOWN", stable="THUMBS_DOWN", eligible="THUMBS_DOWN"),
-            expected_next="THREE",
+            auth_state=_auth_state(committed_sequence=("ONE", "TWO")),
         )
 
         self.assertEqual(first.detected_gesture, "THUMBS_DOWN")
         self.assertIsNone(first.event_label)
         self.assertEqual(second.event_label, "THUMBS_DOWN")
 
-    def test_wrong_digit_requires_extra_confirmation_before_reset_event(self):
+    def test_bravo_is_ignored_until_buffer_is_full(self):
         interpreter = AuthGestureInterpreter()
 
-        first = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="THREE",
-        )
-        second = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="THREE",
-        )
-        third = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="THREE",
+        out = interpreter.update(
+            suite_out=_suite_out(chosen="BRAVO", stable="BRAVO", eligible="BRAVO"),
+            auth_state=_auth_state(committed_sequence=("ONE",), max_length=3),
         )
 
-        self.assertIsNone(first.event_label)
-        self.assertIsNone(second.event_label)
-        self.assertEqual(third.event_label, "TWO")
+        self.assertEqual(out.detected_gesture, "BRAVO")
+        self.assertIsNone(out.event_label)
 
-    def test_waiting_for_bravo_ignores_non_control_auth_events(self):
+    def test_buffer_full_blocks_extra_digits_and_allows_bravo(self):
         interpreter = AuthGestureInterpreter()
+        full_state = _auth_state(committed_sequence=("ONE", "TWO", "THREE"), max_length=3)
 
-        digit = interpreter.update(
+        ignored = interpreter.update(
             suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="BRAVO",
+            auth_state=full_state,
         )
-        reset = interpreter.update(
-            suite_out=_suite_out(chosen="FIST", stable="FIST", eligible="FIST"),
-            expected_next="BRAVO",
-        )
-        reset_confirmed = interpreter.update(
-            suite_out=_suite_out(chosen="FIST", stable="FIST", eligible="FIST"),
-            expected_next="BRAVO",
-        )
-
-        self.assertEqual(digit.detected_gesture, "THREE")
-        self.assertIsNone(digit.event_label)
-        self.assertEqual(reset.detected_gesture, "FIST")
-        self.assertIsNone(reset.event_label)
-        self.assertEqual(reset_confirmed.event_label, "FIST")
-
-    def test_same_held_auth_pose_only_emits_once_until_released(self):
-        interpreter = AuthGestureInterpreter()
-
         interpreter.update(
             suite_out=_suite_out(chosen="BRAVO", stable="BRAVO", eligible="BRAVO"),
-            expected_next="BRAVO",
+            auth_state=full_state,
         )
-        first = interpreter.update(
+        bravo = interpreter.update(
             suite_out=_suite_out(chosen="BRAVO", stable="BRAVO", eligible="BRAVO"),
-            expected_next="BRAVO",
-        )
-        held = interpreter.update(
-            suite_out=_suite_out(chosen="BRAVO", stable="BRAVO", eligible="BRAVO"),
-            expected_next="BRAVO",
-        )
-        released1 = interpreter.update(
-            suite_out=_suite_out(chosen=None, stable=None, eligible=None),
-            expected_next="BRAVO",
-        )
-        released2 = interpreter.update(
-            suite_out=_suite_out(chosen=None, stable=None, eligible=None),
-            expected_next="BRAVO",
-        )
-        reenter_warm = interpreter.update(
-            suite_out=_suite_out(chosen="BRAVO", stable="BRAVO", eligible="BRAVO"),
-            expected_next="BRAVO",
-        )
-        reenter = interpreter.update(
-            suite_out=_suite_out(chosen="BRAVO", stable="BRAVO", eligible="BRAVO"),
-            expected_next="BRAVO",
+            auth_state=full_state,
         )
 
-        self.assertEqual(first.event_label, "BRAVO")
-        self.assertIsNone(held.event_label)
-        self.assertIsNone(released1.event_label)
-        self.assertIsNone(released2.event_label)
-        self.assertIsNone(reenter_warm.event_label)
-        self.assertEqual(reenter.event_label, "BRAVO")
+        self.assertIsNone(ignored.event_label)
+        self.assertEqual(bravo.event_label, "BRAVO")
+
+    def test_open_palm_aliases_to_five_when_five_is_in_auth_sequence(self):
+        cfg = GestureAuthCfg(sequence=("ONE", "TWO", "THREE", "FOUR", "FIVE"))
+        interpreter = AuthGestureInterpreter(auth_cfg=cfg)
+        state = _auth_state(committed_sequence=("ONE", "TWO", "THREE", "FOUR"), max_length=5)
+
+        first = interpreter.update(
+            suite_out=_suite_out(chosen="OPEN_PALM", stable="OPEN_PALM", eligible="OPEN_PALM"),
+            auth_state=state,
+        )
+        second = interpreter.update(
+            suite_out=_suite_out(chosen="OPEN_PALM", stable="OPEN_PALM", eligible="OPEN_PALM"),
+            auth_state=state,
+        )
+
+        self.assertEqual(first.detected_gesture, "FIVE")
+        self.assertIsNone(first.event_label)
+        self.assertEqual(second.event_label, "FIVE")
 
     def test_brief_missing_hand_does_not_rearm_next_digit(self):
         interpreter = AuthGestureInterpreter()
 
         interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
             hand_present=True,
         )
-        first = interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
+        committed = interpreter.update(
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
             hand_present=True,
         )
         lost = interpreter.update(
             suite_out=None,
-            expected_next="THREE",
+            auth_state=_auth_state(committed_sequence=("ONE",)),
             hand_present=False,
         )
         reacquired = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
+            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
+            auth_state=_auth_state(committed_sequence=("ONE",)),
             hand_present=True,
         )
 
-        self.assertEqual(first.event_label, "TWO")
+        self.assertEqual(committed.event_label, "ONE")
         self.assertIsNone(lost.event_label)
         self.assertIsNone(reacquired.event_label)
 
@@ -252,38 +271,31 @@ class AuthGestureInterpreterTests(unittest.TestCase):
         interpreter = AuthGestureInterpreter()
 
         interpreter.update(
-            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
-            expected_next="TWO",
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
             hand_present=True,
         )
         interpreter.update(
-            suite_out=None,
-            expected_next="THREE",
-            hand_present=False,
+            suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
+            auth_state=_auth_state(),
+            hand_present=True,
         )
-        interpreter.update(
-            suite_out=None,
-            expected_next="THREE",
-            hand_present=False,
-        )
-        interpreter.update(
-            suite_out=None,
-            expected_next="THREE",
-            hand_present=False,
-        )
-        next_digit = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
+        interpreter.update(suite_out=None, auth_state=_auth_state(committed_sequence=("ONE",)), hand_present=False)
+        interpreter.update(suite_out=None, auth_state=_auth_state(committed_sequence=("ONE",)), hand_present=False)
+        interpreter.update(suite_out=None, auth_state=_auth_state(committed_sequence=("ONE",)), hand_present=False)
+        warm = interpreter.update(
+            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
+            auth_state=_auth_state(committed_sequence=("ONE",)),
             hand_present=True,
         )
         confirmed = interpreter.update(
-            suite_out=_suite_out(chosen="THREE", stable="THREE", eligible="THREE"),
-            expected_next="THREE",
+            suite_out=_suite_out(chosen="TWO", stable="TWO", eligible="TWO"),
+            auth_state=_auth_state(committed_sequence=("ONE",)),
             hand_present=True,
         )
 
-        self.assertIsNone(next_digit.event_label)
-        self.assertEqual(confirmed.event_label, "THREE")
+        self.assertIsNone(warm.event_label)
+        self.assertEqual(confirmed.event_label, "TWO")
 
     def test_runtime_roles_follow_auth_cfg(self):
         cfg = GestureAuthCfg(
@@ -296,30 +308,40 @@ class AuthGestureInterpreterTests(unittest.TestCase):
 
         non_auth = interpreter.update(
             suite_out=_suite_out(chosen="FIST", stable="FIST", eligible="FIST"),
-            expected_next="ONE",
+            auth_state=_auth_state(max_length=2),
         )
         interpreter.update(
             suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
-            expected_next="ONE",
+            auth_state=_auth_state(max_length=2),
         )
-        expected = interpreter.update(
+        digit = interpreter.update(
             suite_out=_suite_out(chosen="ONE", stable="ONE", eligible="ONE"),
-            expected_next="ONE",
+            auth_state=_auth_state(max_length=2),
         )
         back_first = interpreter.update(
             suite_out=_suite_out(chosen="POINT_LEFT", stable="POINT_LEFT", eligible="POINT_LEFT"),
-            expected_next="TWO",
+            auth_state=_auth_state(committed_sequence=("ONE",), max_length=2),
         )
         back_second = interpreter.update(
             suite_out=_suite_out(chosen="POINT_LEFT", stable="POINT_LEFT", eligible="POINT_LEFT"),
-            expected_next="TWO",
+            auth_state=_auth_state(committed_sequence=("ONE",), max_length=2),
         )
 
         self.assertIsNone(non_auth.detected_gesture)
         self.assertIsNone(non_auth.event_label)
-        self.assertEqual(expected.event_label, "ONE")
+        self.assertEqual(digit.event_label, "ONE")
         self.assertIsNone(back_first.event_label)
         self.assertEqual(back_second.event_label, "POINT_LEFT")
+
+    def test_auth_set_helpers_include_mode_alias_labels(self):
+        cfg = GestureAuthCfg(sequence=("ONE", "TWO", "THREE", "FOUR", "FIVE"))
+
+        allowed = auth_allowed_for_cfg(cfg)
+        priority = auth_priority_for_cfg(cfg)
+
+        self.assertIn("PEACE_SIGN", allowed)
+        self.assertIn("OPEN_PALM", allowed)
+        self.assertLess(priority.index("FIVE"), priority.index("OPEN_PALM"))
 
 
 if __name__ == "__main__":

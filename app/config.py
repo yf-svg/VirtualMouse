@@ -30,6 +30,7 @@ class SecondaryInteractionConfig:
 
 @dataclass(frozen=True)
 class ScrollInteractionConfig:
+    toggle_gesture_label: str = "SHAKA"
     dead_zone: float = 0.035
     axis_dominance_margin: float = 0.012
     pause_reset_s: float = 0.35

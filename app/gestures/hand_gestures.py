@@ -89,13 +89,14 @@ class GestureCfg:
 
     # Closed palm
     closed_palm_min_chain_count: int = 3
-    closed_palm_max_parallel_angle_deg: float = 30.0
-    closed_palm_max_adjacent_tip_x_ratio: float = 0.26
-    closed_palm_max_avg_tip_x_ratio: float = 0.22
-    closed_palm_max_cluster_ratio: float = 0.72
+    closed_palm_max_parallel_angle_deg: float = 35.0
+    closed_palm_max_adjacent_tip_x_ratio: float = 0.34
+    closed_palm_max_avg_tip_x_ratio: float = 0.28
+    closed_palm_max_cluster_ratio: float = 0.95
+    closed_palm_min_compact_votes: int = 2
     closed_palm_thumb_min_tip_to_palm: float = 0.30
-    closed_palm_thumb_max_tip_to_palm: float = 0.88
-    closed_palm_thumb_index_max_ratio: float = 1.02
+    closed_palm_thumb_max_tip_to_palm: float = 1.08
+    closed_palm_thumb_index_max_ratio: float = 1.28
 
     # Peace sign: two raised fingers with ring/pinky folded and a compact thumb.
     two_finger_folded_y_margin: float = 0.0
@@ -103,6 +104,10 @@ class GestureCfg:
     peace_min_tip_gap_ratio: float = 0.28
     peace_thumb_ring_min_gap_ratio: float = 0.24
     peace_thumb_max_tip_to_palm: float = 0.78
+
+    # Shaka: thumb + pinky extended with the middle three fingers curled.
+    shaka_min_thumb_tip_distance: float = 0.55
+    shaka_min_thumb_pinky_gap_ratio: float = 0.95
 
     # L gesture perpendicular check
     l_perp_cos_max: float = 0.45
@@ -296,12 +301,22 @@ class HandGestures:
         adjacent_finger_angles = self._adjacent_finger_angles(lm)
         thumb_to_index_ratio = self._d(lm[THUMB_TIP], lm[INDEX_MCP]) / palm_width
         chain_count = self._non_thumb_chain_count(lm)
+        compact_votes = sum(
+            1
+            for matched in (
+                max(adjacent_tip_x_ratios) < self.cfg.open_palm_min_adjacent_tip_x_ratio,
+                avg_tip_x_ratio < self.cfg.open_palm_min_avg_tip_x_ratio,
+                cluster_ratio < self.cfg.open_palm_min_cluster_ratio,
+            )
+            if matched
+        )
         passed = (
             chain_count >= self.cfg.closed_palm_min_chain_count
             and max(adjacent_finger_angles) <= self.cfg.closed_palm_max_parallel_angle_deg
             and max(adjacent_tip_x_ratios) <= self.cfg.closed_palm_max_adjacent_tip_x_ratio
             and avg_tip_x_ratio <= self.cfg.closed_palm_max_avg_tip_x_ratio
             and cluster_ratio <= self.cfg.closed_palm_max_cluster_ratio
+            and compact_votes >= self.cfg.closed_palm_min_compact_votes
             and self.cfg.closed_palm_thumb_min_tip_to_palm <= summary.thumb.tip_to_palm <= self.cfg.closed_palm_thumb_max_tip_to_palm
             and thumb_to_index_ratio <= self.cfg.closed_palm_thumb_index_max_ratio
         )
@@ -377,6 +392,45 @@ class HandGestures:
             and thumb_tip_to_palm <= self.cfg.peace_thumb_max_tip_to_palm
         )
 
+    def detect_shaka(self, landmarks: Any) -> bool:
+        """
+        SHAKA:
+        - thumb and pinky are clearly extended
+        - index/middle/ring stay curled
+        - no thumb-finger pinch contact
+
+        The rule intentionally avoids palm-vs-back orientation assumptions so the
+        pose can be recognized from either side of the hand.
+        """
+        lm = self._lm(landmarks)
+        summary = summarize_hand_pose(lm, use_3d=self.cfg.use_3d, min_scale=self.cfg.min_scale)
+        palm_width = self._palm_width(lm)
+        thumb_pinky_gap_ratio = self._d(lm[THUMB_TIP], lm[PINKY_TIP]) / palm_width
+
+        index_curled = (
+            self.finger_curled(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
+            or self._finger_folded_toward_palm(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
+        )
+        middle_curled = (
+            self.finger_curled(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
+            or self._finger_folded_toward_palm(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
+        )
+        ring_curled = (
+            self.finger_curled(lm, RING_TIP, RING_PIP, RING_MCP)
+            or self._finger_folded_toward_palm(lm, RING_TIP, RING_PIP, RING_MCP)
+        )
+        pinky_extended = self._finger_raised(lm, PINKY_TIP, PINKY_PIP, PINKY_MCP)
+
+        return (
+            self.thumb_extended(lm)
+            and pinky_extended
+            and index_curled
+            and middle_curled
+            and ring_curled
+            and summary.min_thumb_tip_distance >= self.cfg.shaka_min_thumb_tip_distance
+            and thumb_pinky_gap_ratio >= self.cfg.shaka_min_thumb_pinky_gap_ratio
+        )
+
     # ✅ Numbers use ONLY the 4 non-thumb fingers to prevent BRAVO/ONE confusion
     def detect_numbers_1_to_5(self, landmarks: Any) -> Optional[str]:
         """
@@ -393,7 +447,7 @@ class HandGestures:
 
         if self.detect_open_palm(landmarks):
             return "FIVE"
-        if self.detect_peace_sign(landmarks):
+        if self.detect_peace_sign(landmarks) or self.detect_shaka(landmarks):
             return None
 
         ext_i = self._finger_raised(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
@@ -466,6 +520,9 @@ def detect_closed_palm(landmarks: Any) -> bool:
 
 def detect_peace_sign(landmarks: Any) -> bool:
     return _DEFAULT.detect_peace_sign(landmarks)
+
+def detect_shaka(landmarks: Any) -> bool:
+    return _DEFAULT.detect_shaka(landmarks)
 
 def detect_number(landmarks: Any) -> Optional[str]:
     return _DEFAULT.detect_numbers_1_to_5(landmarks)

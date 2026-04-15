@@ -342,7 +342,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
     def test_live_vertical_scroll_uses_controller_locked_axis(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
-        self._resolve("PINCH_IM", pt(0.50, 0.50), 0.00)
+        self._resolve("SHAKA", pt(0.50, 0.50), 0.00)
         self._resolve(None, pt(0.50, 0.56), 0.05)
         out = self._resolve(None, pt(0.50, 0.62), 0.10)
 
@@ -363,7 +363,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
     def test_live_horizontal_scroll_uses_controller_locked_axis(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
-        self._resolve("PINCH_IM", pt(0.50, 0.50), 0.00)
+        self._resolve("SHAKA", pt(0.50, 0.50), 0.00)
         self._resolve(None, pt(0.56, 0.50), 0.05)
         out = self._resolve(None, pt(0.62, 0.50), 0.10)
 
@@ -386,7 +386,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
         gate = ExecutionSafetyGate()
         self._resolve("PINCH_MIDDLE", pt(0.10, 0.10), 0.00)
         cancelled = self._resolve("PINCH_MIDDLE", pt(0.20, 0.20), 0.05)
-        self._resolve("PINCH_IM", pt(0.50, 0.50), 0.10)
+        self._resolve("SHAKA", pt(0.50, 0.50), 0.10)
         idle_scroll = self._resolve(None, pt(0.505, 0.505), 0.15)
 
         cancelled_report = executor.apply_general_mode(
@@ -553,7 +553,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
     def test_no_scroll_on_unstable_scroll_output(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
-        self._resolve("PINCH_IM", pt(0.50, 0.50), 0.00)
+        self._resolve("SHAKA", pt(0.50, 0.50), 0.00)
         self._resolve(None, pt(0.50, 0.56), 0.05)
         out = self._resolve(None, pt(0.50, 0.62), 0.10)
 

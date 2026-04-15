@@ -48,7 +48,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_toggle_is_edge_triggered_and_requires_rearm(self):
         entered = resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -61,7 +61,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
         self.assertEqual(entered.scroll.state, ScrollState.SCROLL_MODE_ACTIVE)
 
         held = resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -86,7 +86,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
         self.assertEqual(release.intent.action_name, "NO_ACTION")
 
         exited = resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -100,7 +100,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_dead_zone_prevents_scroll_on_entry_jitter(self):
         resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -125,7 +125,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_axis_locks_then_scrolls_on_one_axis_only(self):
         resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -163,7 +163,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_pause_resets_axis_lock(self):
         resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -210,7 +210,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_scroll_mode_suppresses_primary_and_secondary_progression(self):
         resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -236,7 +236,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_clutch_cancels_scroll_immediately(self):
         resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,
@@ -261,7 +261,7 @@ class Phase6ScrollModeTests(unittest.TestCase):
 
     def test_prolonged_hand_loss_exits_scroll_mode_safely(self):
         resolve_general_action(
-            gesture_label="PINCH_IM",
+            gesture_label="SHAKA",
             cursor_point=pt(0.30, 0.30),
             clutch_controller=self.clutch,
             scroll_controller=self.scroll,

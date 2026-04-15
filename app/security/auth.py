@@ -1,8 +1,16 @@
 from __future__ import annotations
 
-import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class AuthInputState:
+    committed_sequence: tuple[str, ...]
+    max_length: int
+    accepting_digits: bool
+    ready_to_submit: bool
+    locked_out: bool
 
 
 @dataclass(frozen=True)
@@ -27,6 +35,8 @@ class GestureAuthOut:
     failed_attempts: int
     max_failures: int
     retry_after_s: float | None
+    committed_sequence: tuple[str, ...]
+    buffer_full: bool
 
 
 class GestureAuth:
@@ -40,7 +50,7 @@ class GestureAuth:
 
     @property
     def total_steps(self) -> int:
-        return len(self.cfg.sequence) + 1
+        return len(self.cfg.sequence)
 
     @property
     def expected_first(self) -> str:
@@ -50,17 +60,27 @@ class GestureAuth:
     def current_expected_next(self) -> str | None:
         return self._expected_next()
 
+    @property
+    def current_input_state(self) -> AuthInputState:
+        committed = tuple(self._committed_sequence)
+        return AuthInputState(
+            committed_sequence=committed,
+            max_length=len(self.cfg.sequence),
+            accepting_digits=len(committed) < len(self.cfg.sequence),
+            ready_to_submit=len(committed) == len(self.cfg.sequence),
+            locked_out=self._locked_until_s is not None,
+        )
+
     def _expected_next(self) -> str | None:
         if self._authenticated:
             return None
-        if self._matched_steps < len(self.cfg.sequence):
-            return self.cfg.sequence[self._matched_steps]
+        if len(self._committed_sequence) < len(self.cfg.sequence):
+            return self.cfg.sequence[len(self._committed_sequence)]
         return self.cfg.approve_gestures[0]
 
     def _reset_progress(self) -> None:
-        self._matched_steps = 0
+        self._committed_sequence = ()
         self._authenticated = False
-        self._last_progress_at: float | None = None
 
     def reset(self) -> None:
         self._reset_progress()
@@ -80,16 +100,19 @@ class GestureAuth:
         retry_after_s = None
         if self._locked_until_s is not None and now is not None and now < self._locked_until_s:
             retry_after_s = max(0.0, self._locked_until_s - now)
+        committed_sequence = tuple(self._committed_sequence)
         return GestureAuthOut(
             authenticated=self._authenticated,
             status=status,
-            matched_steps=self._matched_steps,
+            matched_steps=len(committed_sequence),
             total_steps=self.total_steps,
             expected_next=self._expected_next(),
             consumed_label=consumed_label,
             failed_attempts=self._failed_attempts,
             max_failures=self.cfg.max_failures,
             retry_after_s=retry_after_s,
+            committed_sequence=committed_sequence,
+            buffer_full=len(committed_sequence) == len(self.cfg.sequence),
         )
 
     def _register_failure(self, *, status: str, consumed_label: str | None, now: float) -> GestureAuthOut:
@@ -109,68 +132,48 @@ class GestureAuth:
             self._locked_until_s = None
             self._failed_attempts = 0
 
-        if (
-            not self._authenticated
-            and self._matched_steps > 0
-            and self._last_progress_at is not None
-            and (now - self._last_progress_at) > self.cfg.step_timeout_s
-        ):
-            timeout_out = self._register_failure(status="reset_timeout", consumed_label=None, now=now)
-            if gesture_label is None:
-                return timeout_out
-
         if self._authenticated:
             return self._current_out(status="authenticated", consumed_label=gesture_label, now=now)
 
         if gesture_label is None:
-            return self._current_out(
-                status="progress" if self._matched_steps > 0 else "idle",
-                consumed_label=None,
-                now=now,
-            )
+            return self._current_out(status=self._entry_status(), consumed_label=None, now=now)
 
         if gesture_label in self.cfg.reset_gestures:
             self._reset_progress()
             return self._current_out(status="reset_cancel", consumed_label=gesture_label, now=now)
 
         if gesture_label in self.cfg.back_gestures:
-            if self._matched_steps > 0:
-                self._matched_steps -= 1
-                self._authenticated = False
-                self._last_progress_at = now
+            if self._committed_sequence:
+                self._committed_sequence = self._committed_sequence[:-1]
                 return self._current_out(status="step_back", consumed_label=gesture_label, now=now)
             return self._current_out(status="idle", consumed_label=gesture_label, now=now)
 
-        if self._matched_steps >= len(self.cfg.sequence):
-            if gesture_label in self.cfg.approve_gestures:
-                self._matched_steps += 1
+        if gesture_label in self.cfg.approve_gestures:
+            if len(self._committed_sequence) < len(self.cfg.sequence):
+                return self._current_out(status=self._entry_status(), consumed_label=gesture_label, now=now)
+            if tuple(self._committed_sequence) == tuple(self.cfg.sequence):
                 self._authenticated = True
                 self._failed_attempts = 0
-                self._last_progress_at = now
                 self._locked_until_s = None
                 return self._current_out(status="success", consumed_label=gesture_label, now=now)
-            self._last_progress_at = now
-            return self._current_out(status="progress", consumed_label=gesture_label, now=now)
-
-        if gesture_label in self.cfg.approve_gestures:
-            return self._current_out(
-                status="progress" if self._matched_steps > 0 else "idle",
-                consumed_label=gesture_label,
-                now=now,
-            )
-
-        if self._matched_steps < len(self.cfg.sequence):
-            expected = self.cfg.sequence[self._matched_steps]
-            if gesture_label == expected:
-                self._matched_steps += 1
-                self._last_progress_at = now
-                self._locked_until_s = None
-                return self._current_out(
-                    status="started" if self._matched_steps == 1 else "progress",
-                    consumed_label=gesture_label,
-                    now=now,
-                )
-
             return self._register_failure(status="reset_wrong", consumed_label=gesture_label, now=now)
 
-        return self._register_failure(status="reset_wrong", consumed_label=gesture_label, now=now)
+        if gesture_label not in self.cfg.sequence:
+            return self._current_out(status=self._entry_status(), consumed_label=gesture_label, now=now)
+
+        if len(self._committed_sequence) >= len(self.cfg.sequence):
+            return self._current_out(status="ready_to_submit", consumed_label=gesture_label, now=now)
+
+        self._committed_sequence = tuple((*self._committed_sequence, gesture_label))
+        return self._current_out(
+            status="started" if len(self._committed_sequence) == 1 else self._entry_status(),
+            consumed_label=gesture_label,
+            now=now,
+        )
+
+    def _entry_status(self) -> str:
+        if not self._committed_sequence:
+            return "idle"
+        if len(self._committed_sequence) >= len(self.cfg.sequence):
+            return "ready_to_submit"
+        return "progress"

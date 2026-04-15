@@ -10,6 +10,7 @@ OPS_PRIORITY = [
     "FIST",
     "CLOSED_PALM",
     "OPEN_PALM",
+    "SHAKA",
     "PEACE_SIGN",
     "L",
     "BRAVO",

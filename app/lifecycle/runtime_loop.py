@@ -109,7 +109,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
         tip_beta=0.45,
         d_cutoff=1.0,
     )
-    auth_suite = GestureSuite(allowed=auth_allowed, priority=auth_priority)
+    auth_suite = GestureSuite(allowed=auth_allowed, priority=auth_priority, allow_priority=True)
     auth_interpreter = AuthGestureInterpreter(auth_cfg=router.auth_cfg)
     ops_suite = GestureSuite()
     presentation_interpreter = PresentationGestureInterpreter()
@@ -347,7 +347,7 @@ def run_loop(initial_state: AppState) -> None:
                     out = ctx.auth_suite.detect(state.last_hand)
                     auth_runtime = ctx.auth_interpreter.update(
                         suite_out=out,
-                        expected_next=ctx.router.current_auth_expected_next,
+                        auth_state=ctx.router.current_auth_input_state,
                         hand_present=True,
                     )
                     route = ctx.router.route_auth_edge(auth_runtime.event_label, now=frame_now)
@@ -477,7 +477,7 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_suite.reset()
                     ctx.auth_interpreter.update(
                         suite_out=None,
-                        expected_next=ctx.router.current_auth_expected_next,
+                        auth_state=ctx.router.current_auth_input_state,
                         hand_present=False,
                     )
                     route = ctx.router.route_auth_edge(None, now=frame_now)

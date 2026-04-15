@@ -20,7 +20,7 @@
 - ADR-015 | Primary interaction | `PINCH_INDEX` click/drag/double-click must consume `eligible` + abstract cursor-space movement; no dependency on final cursor-pose gesture
 - ADR-016 | Clutch | `FIST` clutch must sit above primary interaction on the same abstract cursor-space seam and suppress same-frame re-entry on release
 - ADR-017 | Secondary interaction | `PINCH_MIDDLE` right-click must use a sibling release-only controller on the same seam; clutch/primary ownership suppress it
-- ADR-018 | Scroll mode | `PINCH_IM` scroll must be an edge-triggered mode controller below clutch and above primary/secondary, with deterministic axis lock/reset on the same seam
+- ADR-018 | Scroll mode | scroll must use a dedicated non-pinch toggle gesture (current default: `SHAKA`) as an edge-triggered mode controller below clutch and above primary/secondary, with deterministic axis lock/reset on the same seam
 - ADR-019 | Cursor policy | cursor pose choice remains provisional and must stay isolated in a dedicated policy layer; movement preview/output lives in a separate controller beneath higher-priority owners
 - ADR-020 | OS execution | OS side effects must live in a separate execution adapter behind the dry-run contract; live cursor reuses cursor preview output and remains globally disableable
 - ADR-021 | General live execution | primary/secondary/scroll live actions must be translated only from dry-run subsystem outputs; drag cursor motion reuses the primary subsystem cursor-space seam rather than bypassing controllers
