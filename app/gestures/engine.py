@@ -25,6 +25,7 @@ from app.gestures.rules import snapshot_to_candidates
 @dataclass
 class EngineOut:
     snapshot: Optional[GestureSnapshot]
+    raw_candidates: Set[str]
     candidates: Set[str]
     decision: Decision
     temporal: TemporalOut
@@ -70,6 +71,7 @@ class GestureEngine:
             empty_dec = Decision(active=None, candidates=set(), reason="none")
             return EngineOut(
                 snapshot=None,
+                raw_candidates=set(),
                 candidates=set(),
                 decision=empty_dec,
                 temporal=t,
@@ -86,6 +88,7 @@ class GestureEngine:
             gated_dec = Decision(active=None, candidates=set(), reason=f"gated:{quality.reason}")
             return EngineOut(
                 snapshot=None,
+                raw_candidates=set(),
                 candidates=set(),
                 decision=gated_dec,
                 temporal=t,
@@ -98,9 +101,10 @@ class GestureEngine:
         feature_temporal = self.feature_temporal.update(feature_vector)
 
         snap = self.registry.detect(hand_landmarks)
-        candidates = snapshot_to_candidates(snap)
+        raw_candidates = snapshot_to_candidates(snap)
+        candidates = raw_candidates
         if self.allowed is not None:
-            candidates = {c for c in candidates if c in self.allowed}
+            candidates = {c for c in raw_candidates if c in self.allowed}
 
         # Disambiguation is validation-first: ambiguous => active None
         decision = choose_one(
@@ -115,6 +119,7 @@ class GestureEngine:
 
         return EngineOut(
             snapshot=snap,
+            raw_candidates=raw_candidates,
             candidates=candidates,
             decision=decision,
             temporal=t,

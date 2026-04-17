@@ -27,6 +27,7 @@ class ModeRouter:
     ):
         self._sm = StateMachine(initial_state)
         self._auth = auth or GestureAuth()
+        self._presentation_suppressed = False
 
     @property
     def state(self) -> AppState:
@@ -144,10 +145,28 @@ class ModeRouter:
             auth_out=auth_out,
         )
 
+    def request_presentation_exit(self, *, source: str = "operator", reason: str = "presentation_exit") -> RouteOut:
+        if self.state == AppState.ACTIVE_PRESENTATION:
+            self._sm.set_state(AppState.ACTIVE_GENERAL)
+            self._presentation_suppressed = True
+        auth_out = self._idle_auth_out(status="presentation_exited")
+        return RouteOut(
+            state=self.state,
+            suite_key=self._suite_key(),
+            auth_status=auth_out.status,
+            auth_progress_text=f"Presentation off ({source}:{reason})",
+            auth_out=auth_out,
+        )
+
     def sync_presentation_permission(self, allowed: bool) -> RouteOut:
-        if allowed and self.state == AppState.ACTIVE_GENERAL:
+        if not allowed:
+            self._presentation_suppressed = False
+
+        effective_allowed = allowed and not self._presentation_suppressed
+
+        if effective_allowed and self.state == AppState.ACTIVE_GENERAL:
             self._sm.set_state(AppState.ACTIVE_PRESENTATION)
-        elif not allowed and self.state == AppState.ACTIVE_PRESENTATION:
+        elif not effective_allowed and self.state == AppState.ACTIVE_PRESENTATION:
             self._sm.set_state(AppState.ACTIVE_GENERAL)
 
         auth_out = self._idle_auth_out(status="presentation_active" if self.state == AppState.ACTIVE_PRESENTATION else "idle")

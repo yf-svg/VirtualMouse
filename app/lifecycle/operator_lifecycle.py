@@ -11,9 +11,10 @@ class ExitRequest:
     source: str
     reason: str
     trigger: str
+    effect: str = "exit_app"
 
     def summary(self) -> str:
-        return f"{self.source}:{self.trigger}"
+        return f"{self.effect}:{self.source}:{self.trigger}"
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,26 @@ class OperatorLifecycleController:
             return None
         return ExitRequest(source="manual", reason="manual_exit_key", trigger=token)
 
-    def request_from_suite_out(self, *, suite_out, router_state: AppState) -> ExitRequest | None:
+    @staticmethod
+    def _general_exit_is_safe(general_out) -> bool:
+        if general_out is None:
+            return True
+        for component in (
+            getattr(general_out, "clutch", None),
+            getattr(general_out, "scroll", None),
+            getattr(general_out, "primary", None),
+            getattr(general_out, "secondary", None),
+        ):
+            if component is None:
+                continue
+            if bool(getattr(component, "owns_state", False)):
+                return False
+            intent = getattr(component, "intent", None)
+            if getattr(intent, "action_name", "NO_ACTION") != "NO_ACTION":
+                return False
+        return True
+
+    def request_from_suite_out(self, *, suite_out, router_state: AppState, general_out=None) -> ExitRequest | None:
         if not self._gesture_exit_enabled:
             return None
         if router_state not in {AppState.ACTIVE_GENERAL, AppState.ACTIVE_PRESENTATION}:
@@ -62,6 +82,15 @@ class OperatorLifecycleController:
             return None
         hold_frames = int(getattr(suite_out, "hold_frames", 0) or 0)
         if hold_frames < max(1, int(self.cfg.gesture_exit_min_hold_frames)):
+            return None
+        if router_state == AppState.ACTIVE_PRESENTATION:
+            return ExitRequest(
+                source="gesture",
+                reason="presentation_gesture_exit",
+                trigger=self._gesture_exit_label,
+                effect="exit_presentation",
+            )
+        if not self._general_exit_is_safe(general_out):
             return None
         return ExitRequest(source="gesture", reason="gesture_exit", trigger=self._gesture_exit_label)
 

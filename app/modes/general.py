@@ -47,6 +47,7 @@ def map_gesture_to_action(gesture_label: str | None) -> ActionIntent:
 def resolve_general_action(
     *,
     gesture_label: str | None,
+    cursor_gesture_label: str | None = None,
     cursor_point: CursorPoint | None,
     clutch_controller: ClutchController,
     scroll_controller: ScrollModeController,
@@ -55,6 +56,7 @@ def resolve_general_action(
     cursor_controller: CursorPreviewController,
     now: float,
 ) -> GeneralModeOut:
+    cursor_label = cursor_gesture_label if cursor_gesture_label is not None else gesture_label
     clutch = clutch_controller.update(
         gesture_label=gesture_label,
         cursor_point=cursor_point,
@@ -65,7 +67,7 @@ def resolve_general_action(
         primary_controller.reset()
         secondary_controller.reset()
         cursor = cursor_controller.update(
-            gesture_label=gesture_label,
+            gesture_label=cursor_label,
             cursor_point=cursor_point,
             higher_priority_owned=True,
             now=now,
@@ -100,7 +102,7 @@ def resolve_general_action(
         primary_controller.reset()
         secondary_controller.reset()
         cursor = cursor_controller.update(
-            gesture_label=gesture_label,
+            gesture_label=cursor_label,
             cursor_point=cursor_point,
             higher_priority_owned=True,
             now=now,
@@ -130,7 +132,7 @@ def resolve_general_action(
     if primary.owns_state:
         secondary_controller.reset()
         cursor = cursor_controller.update(
-            gesture_label=gesture_label,
+            gesture_label=cursor_label,
             cursor_point=cursor_point,
             higher_priority_owned=True,
             now=now,
@@ -155,7 +157,7 @@ def resolve_general_action(
     )
     if secondary.owns_state or secondary.intent.action_name != "NO_ACTION":
         cursor = cursor_controller.update(
-            gesture_label=gesture_label,
+            gesture_label=cursor_label,
             cursor_point=cursor_point,
             higher_priority_owned=True,
             now=now,
@@ -170,7 +172,7 @@ def resolve_general_action(
         )
 
     cursor = cursor_controller.update(
-        gesture_label=gesture_label,
+        gesture_label=cursor_label,
         cursor_point=cursor_point,
         higher_priority_owned=False,
         now=now,

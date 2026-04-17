@@ -73,6 +73,8 @@ class PrimaryInteractionController:
         return self._update_neutral(gesture_label=gesture_label, cursor_point=cursor_point)
 
     def _resolve_pending_click_timeout(self, now: float) -> PrimaryInteractionOut | None:
+        if not self.cfg.enable_double_click:
+            return None
         if self._state != PrimaryInteractionState.CLICK_PENDING:
             return None
         if self._pending_deadline_s is None or now < self._pending_deadline_s:
@@ -143,7 +145,7 @@ class PrimaryInteractionController:
             return self._enter_hand_loss(now=now, resume_state=PrimaryInteractionState.PRIMARY_PINCH_CANDIDATE)
 
         if self._candidate_max_movement <= self.cfg.click_release_tolerance:
-            if self._pending_deadline_s is not None:
+            if self.cfg.enable_double_click and self._pending_deadline_s is not None:
                 within_window = now <= self._pending_deadline_s
                 self._pending_deadline_s = None
                 self._state = PrimaryInteractionState.NEUTRAL
@@ -161,14 +163,31 @@ class PrimaryInteractionController:
                     cursor_point=cursor_point,
                 )
 
-            self._state = PrimaryInteractionState.CLICK_PENDING
-            self._pending_deadline_s = now + self.cfg.double_click_window_s
+            if self.cfg.enable_double_click:
+                self._state = PrimaryInteractionState.CLICK_PENDING
+                self._pending_deadline_s = now + self.cfg.double_click_window_s
+                self._candidate_anchor = None
+                self._candidate_max_movement = 0.0
+                return PrimaryInteractionOut(
+                    state=self._state,
+                    intent=no_action(reason="click_pending", gesture_label="PINCH_INDEX"),
+                    owns_state=True,
+                    movement=0.0,
+                    cursor_point=cursor_point,
+                )
+
+            self._state = PrimaryInteractionState.NEUTRAL
+            self._pending_deadline_s = None
             self._candidate_anchor = None
             self._candidate_max_movement = 0.0
             return PrimaryInteractionOut(
                 state=self._state,
-                intent=no_action(reason="click_pending", gesture_label="PINCH_INDEX"),
-                owns_state=True,
+                intent=dry_run_action(
+                    "PRIMARY_CLICK",
+                    gesture_label="PINCH_INDEX",
+                    reason="click_release_valid",
+                ),
+                owns_state=False,
                 movement=0.0,
                 cursor_point=cursor_point,
             )

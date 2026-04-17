@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from app.config import CONFIG, ExecutionConfig
 from app.control.cursor_preview import CursorPreviewOut, CursorPreviewState
+from app.control.cursor_space import CursorPoint
 from app.control.execution_safety import ExecutionSafetyDecision
 from app.control.keyboard import KeyboardBackend, NoOpKeyboardBackend, WindowsKeyboardBackend
 from app.control.mouse import MouseBackend, NoOpMouseBackend, ScreenPoint, WindowsMouseBackend
@@ -104,12 +105,25 @@ class OSActionExecutor:
     def policy_status_text(self) -> str:
         return self.policy.status_text()
 
+    def current_cursor_normalized(self) -> CursorPoint | None:
+        width, height = self.mouse_backend.screen_size()
+        if width <= 1 or height <= 1:
+            return None
+        point = self.mouse_backend.cursor_position_abs()
+        x = min(1.0, max(0.0, float(point.x) / float(width - 1)))
+        y = min(1.0, max(0.0, float(point.y) / float(height - 1)))
+        return CursorPoint(x=x, y=y)
+
     def neutralize(self, *, reason: str) -> ExecutionNeutralizationReport:
         released_primary_drag = False
         if self._primary_drag_down:
-            self.mouse_backend.left_button_up()
-            self._primary_drag_down = False
-            released_primary_drag = True
+            try:
+                self.mouse_backend.left_button_up()
+            except OSError:
+                released_primary_drag = False
+            else:
+                self._primary_drag_down = False
+                released_primary_drag = True
         self._last_cursor_target = None
         self.keyboard_backend.release_all()
         return ExecutionNeutralizationReport(
@@ -205,7 +219,10 @@ class OSActionExecutor:
         if out.intent.action_name != "CURSOR_PREVIEW_MOVE":
             return ExecutionReport(False, out.intent.action_name, "cursor_no_move_required", None, True)
 
-        target, moved = self._move_cursor_from_normalized(out.preview_point.x, out.preview_point.y)
+        try:
+            target, moved = self._move_cursor_from_normalized(out.preview_point.x, out.preview_point.y)
+        except OSError as exc:
+            return self._backend_error_report("cursor", out.intent.action_name, exc)
         if not moved:
             return ExecutionReport(False, out.intent.action_name, "cursor_target_unchanged", target, True)
 
@@ -248,25 +265,40 @@ class OSActionExecutor:
             higher_priority_owned
             or (not out.owns_state and action_name not in {"PRIMARY_DRAG_START", "PRIMARY_DRAG_HOLD", "PRIMARY_DRAG_END"})
         ):
-            self.mouse_backend.left_button_up()
+            try:
+                self.mouse_backend.left_button_up()
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc)
             self._primary_drag_down = False
             return ExecutionReport(True, action_name, "primary_drag_cancelled", None, True)
 
         if action_name == "PRIMARY_CLICK":
-            self.mouse_backend.left_click()
+            try:
+                self.mouse_backend.left_click()
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc)
             return ExecutionReport(True, action_name, "primary_click_emitted", None, True)
 
         if action_name == "PRIMARY_DOUBLE_CLICK":
-            self.mouse_backend.double_left_click()
+            try:
+                self.mouse_backend.double_left_click()
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc)
             return ExecutionReport(True, action_name, "primary_double_click_emitted", None, True)
 
         if action_name == "PRIMARY_DRAG_START":
             target = None
             moved = False
-            if out.cursor_point is not None:
-                target, moved = self._move_cursor_from_normalized(out.cursor_point.x, out.cursor_point.y)
+            try:
+                if out.cursor_point is not None:
+                    target, moved = self._move_cursor_from_normalized(out.cursor_point.x, out.cursor_point.y)
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc)
             if not self._primary_drag_down:
-                self.mouse_backend.left_button_down()
+                try:
+                    self.mouse_backend.left_button_down()
+                except OSError as exc:
+                    return self._backend_error_report("primary", action_name, exc, target=target)
                 self._primary_drag_down = True
                 return ExecutionReport(True, action_name, "primary_drag_started", target, True)
             if moved:
@@ -278,18 +310,27 @@ class OSActionExecutor:
                 return ExecutionReport(False, action_name, "primary_drag_hold_without_press", None, True)
             if out.cursor_point is None:
                 return ExecutionReport(False, action_name, "primary_drag_hold_no_cursor", None, True)
-            target, moved = self._move_cursor_from_normalized(out.cursor_point.x, out.cursor_point.y)
+            try:
+                target, moved = self._move_cursor_from_normalized(out.cursor_point.x, out.cursor_point.y)
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc)
             if not moved:
                 return ExecutionReport(False, action_name, "primary_drag_holding", target, True)
             return ExecutionReport(True, action_name, "primary_drag_moved", target, True)
 
         if action_name == "PRIMARY_DRAG_END":
             target = None
-            if out.cursor_point is not None:
-                target, _ = self._move_cursor_from_normalized(out.cursor_point.x, out.cursor_point.y)
+            try:
+                if out.cursor_point is not None:
+                    target, _ = self._move_cursor_from_normalized(out.cursor_point.x, out.cursor_point.y)
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc)
             if not self._primary_drag_down:
                 return ExecutionReport(False, action_name, "primary_drag_end_without_press", target, True)
-            self.mouse_backend.left_button_up()
+            try:
+                self.mouse_backend.left_button_up()
+            except OSError as exc:
+                return self._backend_error_report("primary", action_name, exc, target=target)
             self._primary_drag_down = False
             return ExecutionReport(True, action_name, "primary_drag_ended", target, True)
 
@@ -316,7 +357,10 @@ class OSActionExecutor:
         if action_name != "SECONDARY_RIGHT_CLICK":
             return ExecutionReport(False, action_name, "secondary_no_action", None, True)
 
-        self.mouse_backend.right_click()
+        try:
+            self.mouse_backend.right_click()
+        except OSError as exc:
+            return self._backend_error_report("secondary", action_name, exc)
         return ExecutionReport(True, action_name, "secondary_right_click_emitted", None, True)
 
     def apply_scroll_output(
@@ -348,14 +392,20 @@ class OSActionExecutor:
             amount = self._to_scroll_units(out.movement)
             if amount == 0:
                 return ExecutionReport(False, action_name, "scroll_units_zero", None, True)
-            self.mouse_backend.scroll_vertical(amount)
+            try:
+                self.mouse_backend.scroll_vertical(amount)
+            except OSError as exc:
+                return self._backend_error_report("scroll", action_name, exc)
             return ExecutionReport(True, action_name, "scroll_vertical_emitted", None, True)
 
         if action_name == "SCROLL_HORIZONTAL":
             amount = self._to_scroll_units(out.movement)
             if amount == 0:
                 return ExecutionReport(False, action_name, "scroll_units_zero", None, True)
-            self.mouse_backend.scroll_horizontal(amount)
+            try:
+                self.mouse_backend.scroll_horizontal(amount)
+            except OSError as exc:
+                return self._backend_error_report("scroll", action_name, exc)
             return ExecutionReport(True, action_name, "scroll_horizontal_emitted", None, True)
 
         if action_name == "SCROLL_MODE_ENTER":
@@ -371,6 +421,18 @@ class OSActionExecutor:
         self.mouse_backend.move_cursor_abs(target)
         self._last_cursor_target = target
         return target, True
+
+    @staticmethod
+    def _backend_error_report(
+        subsystem: str,
+        action_name: str | None,
+        exc: OSError,
+        *,
+        target: ScreenPoint | None = None,
+    ) -> ExecutionReport:
+        code = getattr(exc, "errno", None)
+        reason = f"{subsystem}_backend_error" if code in (None, 0) else f"{subsystem}_backend_error:{code}"
+        return ExecutionReport(False, action_name, reason, target, True)
 
     def _to_screen_point(self, x_norm: float, y_norm: float) -> ScreenPoint:
         width, height = self.mouse_backend.screen_size()

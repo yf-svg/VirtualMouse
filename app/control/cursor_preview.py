@@ -51,6 +51,15 @@ class CursorPreviewController:
         self._preview_point: CursorPoint | None = None
         self._anchor_point: CursorPoint | None = None
 
+    def seed_preview_point(self, preview_point: CursorPoint | None) -> None:
+        if preview_point is None:
+            return
+        if self._state != CursorPreviewState.NEUTRAL:
+            return
+        if self._preview_point is not None:
+            return
+        self._preview_point = preview_point
+
     def update(
         self,
         *,

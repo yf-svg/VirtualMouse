@@ -15,6 +15,7 @@ class PrimaryInteractionConfig:
     click_release_tolerance: float = 0.022
     double_click_window_s: float = 0.35
     hand_loss_grace_s: float = 0.18
+    enable_double_click: bool = False
 
 
 @dataclass(frozen=True)
@@ -41,7 +42,7 @@ class ScrollInteractionConfig:
 
 @dataclass(frozen=True)
 class CursorPolicyConfig:
-    allowed_gestures: tuple[str, ...] = ("L",)
+    allowed_gestures: tuple[str, ...] = ("CLOSED_PALM",)
     provisional: bool = True
 
 
@@ -49,6 +50,12 @@ class CursorPolicyConfig:
 class CursorPreviewConfig:
     move_epsilon: float = 0.003
     gain: float = 1.0
+
+
+@dataclass(frozen=True)
+class CursorSpaceConfig:
+    anchor_mode: str = "palm_center"
+    mirror_x: bool = True
 
 
 @dataclass(frozen=True)
@@ -75,11 +82,12 @@ class OperatorLifecycleConfig:
     enable_gesture_exit: bool = True
     gesture_exit_label: str = "THUMBS_DOWN"
     gesture_exit_min_hold_frames: int = 2
+    startup_manual_exit_guard_s: float = 0.75
 
 
 @dataclass(frozen=True)
 class OperatorOverrideConfig:
-    execution_override: str = "inherit"
+    execution_override: str = "fallback_live"
     routing_override: str = "auto"
 
 
@@ -97,6 +105,11 @@ class PresentationRuntimeConfig:
     navigation_confirm_frames: int = 1
     session_control_confirm_frames: int = 2
     release_grace_frames: int = 2
+
+
+@dataclass(frozen=True)
+class RuntimeDebugConfig:
+    pipeline_trace: bool = True
 
 
 @dataclass(frozen=True)
@@ -119,6 +132,7 @@ class AppConfig:
 
     # View
     mirror_view: bool = True
+    tracker_input_is_mirrored: bool = False
 
     # Detection performance (these two strongly affect "No hand detected")
     detect_scale: float = 0.4
@@ -130,6 +144,7 @@ class AppConfig:
     clutch_interaction: ClutchInteractionConfig = field(default_factory=ClutchInteractionConfig)
     secondary_interaction: SecondaryInteractionConfig = field(default_factory=SecondaryInteractionConfig)
     scroll_interaction: ScrollInteractionConfig = field(default_factory=ScrollInteractionConfig)
+    cursor_space: CursorSpaceConfig = field(default_factory=CursorSpaceConfig)
     cursor_policy: CursorPolicyConfig = field(default_factory=CursorPolicyConfig)
     cursor_preview: CursorPreviewConfig = field(default_factory=CursorPreviewConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
@@ -138,6 +153,7 @@ class AppConfig:
     operator_override: OperatorOverrideConfig = field(default_factory=OperatorOverrideConfig)
     presentation_context: PresentationContextConfig = field(default_factory=PresentationContextConfig)
     presentation_runtime: PresentationRuntimeConfig = field(default_factory=PresentationRuntimeConfig)
+    runtime_debug: RuntimeDebugConfig = field(default_factory=RuntimeDebugConfig)
 
 
 CONFIG = AppConfig()

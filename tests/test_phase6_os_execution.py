@@ -22,7 +22,7 @@ from app.control.mouse import NoOpMouseBackend, ScreenPoint
 from app.control.primary_interaction import PrimaryInteractionController
 from app.control.scroll_mode import ScrollModeController
 from app.control.secondary_interaction import SecondaryInteractionController
-from app.lifecycle.runtime_status import _format_execution_policy_status
+from app.lifecycle.runtime_status import _format_cursor_runtime, _format_execution_policy_status
 from app.modes.general import resolve_general_action
 
 
@@ -115,6 +115,27 @@ class Phase6OsExecutionTests(unittest.TestCase):
             mouse_backend=self.backend,
         )
 
+    def _failing_executor(self) -> OSActionExecutor:
+        class _FailingMouseBackend(NoOpMouseBackend):
+            def left_click(self) -> None:
+                raise OSError(5, "left click blocked")
+
+            def right_click(self) -> None:
+                raise OSError(5, "right click blocked")
+
+        return OSActionExecutor(
+            cfg=ExecutionConfig(
+                profile="live",
+                enable_live_os=True,
+                enable_live_cursor=True,
+                enable_live_primary=True,
+                enable_live_secondary=True,
+                enable_live_scroll=True,
+                scroll_units_per_motion=1000.0,
+            ),
+            mouse_backend=_FailingMouseBackend(width=100, height=200),
+        )
+
     def _resolve(self, gesture_label: str | None, cursor_point: CursorPoint | None, now: float):
         return resolve_general_action(
             gesture_label=gesture_label,
@@ -134,6 +155,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
         eligible: str | None,
         feature_reason: str = "ok",
         gate_reason: str = "stable_match",
+        source: str = "rules",
     ) -> _SuiteOut:
         return _SuiteOut(
             chosen=eligible,
@@ -143,7 +165,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
             reason="test",
             down=None,
             up=None,
-            source="rules",
+            source=source,
             confidence=None,
             rule_chosen=stable,
             ml_chosen=None,
@@ -194,12 +216,29 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertEqual(report.cursor.target, ScreenPoint(30, 80))
         self.assertEqual(self.backend.moves, [ScreenPoint(30, 80)])
 
-    def test_live_primary_single_click_emits_once_after_pending_window(self):
+    def test_live_cursor_move_allows_unstable_rule_held_cursor_label(self):
+        executor = self._executor()
+        self._resolve("L", pt(0.20, 0.20), 0.00)
+        out = self._resolve("L", pt(0.30, 0.40), 0.05)
+
+        report = executor.apply_general_mode(
+            out,
+            safety=ExecutionSafetyGate().evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L", feature_reason="unstable"),
+                general_out=out,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.cursor.performed)
+        self.assertEqual(report.cursor.reason, "cursor_moved")
+        self.assertEqual(self.backend.moves, [ScreenPoint(30, 80)])
+
+    def test_live_primary_single_click_emits_immediately_on_valid_release(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
         self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
-        self._resolve("L", pt(0.20, 0.20), 0.05)
-        out = self._resolve("L", pt(0.20, 0.20), 0.40)
+        out = self._resolve("L", pt(0.20, 0.20), 0.05)
 
         report = executor.apply_general_mode(
             out,
@@ -215,7 +254,34 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertEqual(self.backend.left_clicks, 1)
         self.assertEqual(self.backend.double_left_clicks, 0)
 
+    def test_primary_backend_failure_is_reported_not_silent(self):
+        executor = self._failing_executor()
+        gate = ExecutionSafetyGate()
+        self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
+        out = self._resolve("L", pt(0.20, 0.20), 0.05)
+
+        report = executor.apply_general_mode(
+            out,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L"),
+                general_out=out,
+                hand_present=True,
+            ),
+        )
+
+        self.assertFalse(report.primary.performed)
+        self.assertEqual(report.primary.reason, "primary_backend_error:5")
+
     def test_live_primary_double_click_does_not_emit_single_click_first(self):
+        self.primary = PrimaryInteractionController(
+            cfg=PrimaryInteractionConfig(
+                drag_start_distance=0.040,
+                click_release_tolerance=0.020,
+                double_click_window_s=0.30,
+                hand_loss_grace_s=0.10,
+                enable_double_click=True,
+            )
+        )
         executor = self._executor()
         gate = ExecutionSafetyGate()
         self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
@@ -280,6 +346,25 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertEqual(end_report.primary.reason, "primary_drag_ended")
         self.assertGreaterEqual(len(self.backend.moves), 2)
 
+    def test_rule_stable_primary_drag_start_allows_unstable_feature_frame(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
+        start = self._resolve("PINCH_INDEX", pt(0.30, 0.20), 0.05)
+
+        report = executor.apply_general_mode(
+            start,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="PINCH_INDEX", eligible="PINCH_INDEX", feature_reason="unstable"),
+                general_out=start,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.primary.performed)
+        self.assertEqual(report.primary.reason, "primary_drag_started")
+        self.assertEqual(self.backend.left_downs, 1)
+
     def test_drag_is_released_safely_when_clutch_cancels_primary_ownership(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
@@ -338,6 +423,24 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertEqual(report.secondary.reason, "secondary_right_click_emitted")
         self.assertFalse(idle_report.secondary.performed)
         self.assertEqual(self.backend.right_clicks, 1)
+
+    def test_secondary_backend_failure_is_reported_not_silent(self):
+        executor = self._failing_executor()
+        gate = ExecutionSafetyGate()
+        self._resolve("PINCH_MIDDLE", pt(0.40, 0.30), 0.00)
+        out = self._resolve("L", pt(0.40, 0.30), 0.05)
+
+        report = executor.apply_general_mode(
+            out,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L"),
+                general_out=out,
+                hand_present=True,
+            ),
+        )
+
+        self.assertFalse(report.secondary.performed)
+        self.assertEqual(report.secondary.reason, "secondary_backend_error:5")
 
     def test_live_vertical_scroll_uses_controller_locked_axis(self):
         executor = self._executor()
@@ -478,12 +581,21 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertEqual(self.backend.moves, [])
 
     def test_tainted_primary_click_is_suppressed_after_instability(self):
+        self.primary = PrimaryInteractionController(
+            cfg=PrimaryInteractionConfig(
+                drag_start_distance=0.040,
+                click_release_tolerance=0.020,
+                double_click_window_s=0.30,
+                hand_loss_grace_s=0.10,
+                enable_double_click=True,
+            )
+        )
         executor = self._executor()
         gate = ExecutionSafetyGate()
         self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
         pending = self._resolve("L", pt(0.20, 0.20), 0.05)
         gate.evaluate(
-            suite_out=self._suite_out(stable="PINCH_INDEX", eligible=None, feature_reason="unstable"),
+            suite_out=self._suite_out(stable=None, eligible=None, feature_reason="unstable"),
             general_out=pending,
             hand_present=True,
         )
@@ -501,6 +613,49 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertFalse(report.primary.performed)
         self.assertEqual(report.primary.reason, "suppressed_tainted_click")
         self.assertEqual(self.backend.left_clicks, 0)
+
+    def test_rule_stable_primary_candidate_is_not_tainted_by_feature_instability(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        down = self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
+        gate.evaluate(
+            suite_out=self._suite_out(stable="PINCH_INDEX", eligible="PINCH_INDEX", feature_reason="unstable"),
+            general_out=down,
+            hand_present=True,
+        )
+        click = self._resolve("L", pt(0.20, 0.20), 0.05)
+
+        report = executor.apply_general_mode(
+            click,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L"),
+                general_out=click,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.primary.performed)
+        self.assertEqual(report.primary.reason, "primary_click_emitted")
+        self.assertEqual(self.backend.left_clicks, 1)
+
+    def test_primary_click_allows_unstable_release_after_clean_candidate(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
+        click = self._resolve("L", pt(0.20, 0.20), 0.05)
+
+        report = executor.apply_general_mode(
+            click,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L", feature_reason="unstable"),
+                general_out=click,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.primary.performed)
+        self.assertEqual(report.primary.reason, "primary_click_emitted")
+        self.assertEqual(self.backend.left_clicks, 1)
 
     def test_primary_drag_releases_on_hand_loss_suppression(self):
         executor = self._executor()
@@ -531,7 +686,7 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertEqual(self.backend.left_downs, 1)
         self.assertEqual(self.backend.left_ups, 1)
 
-    def test_no_right_click_on_unstable_secondary_transition(self):
+    def test_secondary_click_allows_unstable_release_after_clean_candidate(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
         self._resolve("PINCH_MIDDLE", pt(0.40, 0.30), 0.00)
@@ -546,11 +701,131 @@ class Phase6OsExecutionTests(unittest.TestCase):
             ),
         )
 
+        self.assertTrue(report.secondary.performed)
+        self.assertEqual(report.secondary.reason, "secondary_right_click_emitted")
+        self.assertEqual(self.backend.right_clicks, 1)
+
+    def test_secondary_click_is_suppressed_when_candidate_was_tainted(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        down = self._resolve("PINCH_MIDDLE", pt(0.40, 0.30), 0.00)
+        gate.evaluate(
+            suite_out=self._suite_out(stable=None, eligible=None, feature_reason="unstable"),
+            general_out=down,
+            hand_present=True,
+        )
+        out = self._resolve("L", pt(0.40, 0.30), 0.05)
+
+        report = executor.apply_general_mode(
+            out,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L"),
+                general_out=out,
+                hand_present=True,
+            ),
+        )
+
         self.assertFalse(report.secondary.performed)
-        self.assertEqual(report.secondary.reason, "suppressed_unstable_prediction")
+        self.assertEqual(report.secondary.reason, "suppressed_tainted_click")
         self.assertEqual(self.backend.right_clicks, 0)
 
-    def test_no_scroll_on_unstable_scroll_output(self):
+    def test_rule_stable_secondary_candidate_is_not_tainted_by_feature_instability(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        down = self._resolve("PINCH_MIDDLE", pt(0.40, 0.30), 0.00)
+        gate.evaluate(
+            suite_out=self._suite_out(stable="PINCH_MIDDLE", eligible="PINCH_MIDDLE", feature_reason="unstable"),
+            general_out=down,
+            hand_present=True,
+        )
+        out = self._resolve("L", pt(0.40, 0.30), 0.05)
+
+        report = executor.apply_general_mode(
+            out,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(stable="L", eligible="L"),
+                general_out=out,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.secondary.performed)
+        self.assertEqual(report.secondary.reason, "secondary_right_click_emitted")
+        self.assertEqual(self.backend.right_clicks, 1)
+
+    def test_release_pending_secondary_candidate_is_not_tainted_when_gate_still_confirms_pinch(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        down = self._resolve("PINCH_MIDDLE", pt(0.40, 0.30), 0.00)
+        gate.evaluate(
+            suite_out=self._suite_out(
+                stable="PINCH_MIDDLE",
+                eligible="PINCH_MIDDLE",
+                feature_reason="unstable",
+                gate_reason="release_pending:1",
+                source="none",
+            ),
+            general_out=down,
+            hand_present=True,
+        )
+        out = self._resolve(None, pt(0.40, 0.30), 0.05)
+
+        report = executor.apply_general_mode(
+            out,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(
+                    stable=None,
+                    eligible=None,
+                    feature_reason="unstable",
+                    gate_reason="released",
+                    source="none",
+                ),
+                general_out=out,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.secondary.performed)
+        self.assertEqual(report.secondary.reason, "secondary_right_click_emitted")
+        self.assertEqual(self.backend.right_clicks, 1)
+
+    def test_release_pending_primary_candidate_is_not_tainted_when_gate_still_confirms_pinch(self):
+        executor = self._executor()
+        gate = ExecutionSafetyGate()
+        down = self._resolve("PINCH_INDEX", pt(0.20, 0.20), 0.00)
+        gate.evaluate(
+            suite_out=self._suite_out(
+                stable="PINCH_INDEX",
+                eligible="PINCH_INDEX",
+                feature_reason="unstable",
+                gate_reason="release_pending:1",
+                source="none",
+            ),
+            general_out=down,
+            hand_present=True,
+        )
+        click = self._resolve(None, pt(0.20, 0.20), 0.05)
+
+        report = executor.apply_general_mode(
+            click,
+            safety=gate.evaluate(
+                suite_out=self._suite_out(
+                    stable=None,
+                    eligible=None,
+                    feature_reason="unstable",
+                    gate_reason="released",
+                    source="none",
+                ),
+                general_out=click,
+                hand_present=True,
+            ),
+        )
+
+        self.assertTrue(report.primary.performed)
+        self.assertEqual(report.primary.reason, "primary_click_emitted")
+        self.assertEqual(self.backend.left_clicks, 1)
+
+    def test_scroll_output_allows_unstable_frame_when_mode_is_active(self):
         executor = self._executor()
         gate = ExecutionSafetyGate()
         self._resolve("SHAKA", pt(0.50, 0.50), 0.00)
@@ -566,9 +841,9 @@ class Phase6OsExecutionTests(unittest.TestCase):
             ),
         )
 
-        self.assertFalse(report.scroll.performed)
-        self.assertEqual(report.scroll.reason, "suppressed_unstable_prediction")
-        self.assertEqual(self.backend.vertical_scrolls, [])
+        self.assertTrue(report.scroll.performed)
+        self.assertEqual(report.scroll.reason, "scroll_vertical_emitted")
+        self.assertEqual(self.backend.vertical_scrolls, [60])
 
     def test_policy_status_is_visible_for_overlay(self):
         executor = self._executor()
@@ -586,6 +861,23 @@ class Phase6OsExecutionTests(unittest.TestCase):
         self.assertIn("OVR:EXEC:INHERIT|ROUTE:AUTO", status)
         self.assertIn("XPOL:LIVE:cur,pri,sec,scr", status)
         self.assertIn("SAFE:ok", status)
+
+    def test_cursor_runtime_status_exposes_policy_and_execution_reason(self):
+        general_out = self._resolve("L", pt(0.20, 0.20), 0.00)
+        executor = OSActionExecutor(
+            cfg=ExecutionConfig(
+                profile="dry_run",
+                enable_live_os=False,
+                enable_live_cursor=True,
+            ),
+            mouse_backend=self.backend,
+        )
+        report = executor.apply_general_mode(general_out)
+
+        status = _format_cursor_runtime(general_out.cursor, report.cursor)
+
+        self.assertIn("CUR:CURSOR_ACTIVE(L/ready:cursor_policy_match)", status)
+        self.assertIn("CUREX:dry_run_profile", status)
 
 
 if __name__ == "__main__":

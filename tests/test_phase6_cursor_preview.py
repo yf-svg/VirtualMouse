@@ -66,6 +66,35 @@ class Phase6CursorPreviewTests(unittest.TestCase):
         self.assertTrue(out.cursor.policy.provisional)
         self.assertEqual(out.cursor.policy.gesture_label, "L")
 
+    def test_default_cursor_policy_now_targets_closed_palm(self):
+        cursor = CursorPreviewController(cfg=CursorPreviewConfig(move_epsilon=0.002, gain=1.0))
+
+        rejected = resolve_general_action(
+            gesture_label="L",
+            cursor_point=pt(0.20, 0.20),
+            clutch_controller=self.clutch,
+            scroll_controller=self.scroll,
+            primary_controller=self.primary,
+            secondary_controller=self.secondary,
+            cursor_controller=cursor,
+            now=0.00,
+        )
+        self.assertFalse(rejected.cursor.policy.eligible)
+
+        accepted = resolve_general_action(
+            gesture_label="CLOSED_PALM",
+            cursor_point=pt(0.22, 0.22),
+            clutch_controller=self.clutch,
+            scroll_controller=self.scroll,
+            primary_controller=self.primary,
+            secondary_controller=self.secondary,
+            cursor_controller=cursor,
+            now=0.05,
+        )
+        self.assertTrue(accepted.cursor.policy.eligible)
+        self.assertEqual(accepted.cursor.policy.gesture_label, "CLOSED_PALM")
+        self.assertEqual(accepted.intent.action_name, "CURSOR_PREVIEW_READY")
+
     def test_cursor_preview_moves_when_no_higher_priority_owner_exists(self):
         ready = resolve_general_action(
             gesture_label="L",
@@ -94,6 +123,39 @@ class Phase6CursorPreviewTests(unittest.TestCase):
         self.assertIsNotNone(moved.cursor.preview_point)
         self.assertAlmostEqual(moved.cursor.preview_point.x, 0.25, places=3)
         self.assertAlmostEqual(moved.cursor.preview_point.y, 0.22, places=3)
+
+    def test_cursor_preview_can_be_seeded_from_existing_os_cursor_without_jump(self):
+        self.cursor.seed_preview_point(pt(0.60, 0.40))
+
+        ready = resolve_general_action(
+            gesture_label="L",
+            cursor_point=pt(0.20, 0.20),
+            clutch_controller=self.clutch,
+            scroll_controller=self.scroll,
+            primary_controller=self.primary,
+            secondary_controller=self.secondary,
+            cursor_controller=self.cursor,
+            now=0.00,
+        )
+        self.assertEqual(ready.intent.action_name, "CURSOR_PREVIEW_READY")
+        self.assertIsNotNone(ready.cursor.preview_point)
+        self.assertAlmostEqual(ready.cursor.preview_point.x, 0.60, places=3)
+        self.assertAlmostEqual(ready.cursor.preview_point.y, 0.40, places=3)
+
+        moved = resolve_general_action(
+            gesture_label="L",
+            cursor_point=pt(0.25, 0.22),
+            clutch_controller=self.clutch,
+            scroll_controller=self.scroll,
+            primary_controller=self.primary,
+            secondary_controller=self.secondary,
+            cursor_controller=self.cursor,
+            now=0.05,
+        )
+        self.assertEqual(moved.intent.action_name, "CURSOR_PREVIEW_MOVE")
+        self.assertIsNotNone(moved.cursor.preview_point)
+        self.assertAlmostEqual(moved.cursor.preview_point.x, 0.65, places=3)
+        self.assertAlmostEqual(moved.cursor.preview_point.y, 0.42, places=3)
 
     def test_cursor_is_suppressed_by_primary_ownership(self):
         suppressed = resolve_general_action(

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from app.config import CONFIG, ExecutionSafetyConfig
 from app.control.primary_interaction import PrimaryInteractionState
+from app.control.secondary_interaction import SecondaryInteractionState
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,22 @@ class ExecutionSafetyGate:
 
     def reset(self) -> None:
         self._primary_click_tainted = False
+        self._secondary_click_tainted = False
+
+    @staticmethod
+    def _rules_hold_confirms_label(suite_out, label: str) -> bool:
+        if suite_out is None:
+            return False
+        if label not in {
+            getattr(suite_out, "stable", None),
+            getattr(suite_out, "eligible", None),
+        }:
+            return False
+        source = getattr(suite_out, "source", None)
+        if source == "rules":
+            return True
+        gate_reason = getattr(suite_out, "gate_reason", "") or ""
+        return gate_reason.startswith("release_pending:")
 
     def evaluate(
         self,
@@ -65,17 +82,40 @@ class ExecutionSafetyGate:
             PrimaryInteractionState.CLICK_PENDING,
             PrimaryInteractionState.HAND_LOST_SAFE,
         }:
-            if self.cfg.suppress_on_feature_instability and not feature_ok:
+            if (
+                self.cfg.suppress_on_feature_instability
+                and not feature_ok
+                and not self._rules_hold_confirms_label(suite_out, "PINCH_INDEX")
+            ):
                 self._primary_click_tainted = True
             if self.cfg.suppress_on_hand_loss and not hand_present:
                 self._primary_click_tainted = True
 
+        if general_out.secondary.state in {
+            SecondaryInteractionState.SECONDARY_PINCH_CANDIDATE,
+            SecondaryInteractionState.HAND_LOST_SAFE,
+        }:
+            if (
+                self.cfg.suppress_on_feature_instability
+                and not feature_ok
+                and not self._rules_hold_confirms_label(suite_out, "PINCH_MIDDLE")
+            ):
+                self._secondary_click_tainted = True
+            if self.cfg.suppress_on_hand_loss and not hand_present:
+                self._secondary_click_tainted = True
+
         allow_cursor = True
         cursor_reason = "ok"
+        cursor_label = getattr(getattr(general_out, "cursor", None), "policy", None)
+        cursor_label = getattr(cursor_label, "gesture_label", None)
         if self.cfg.suppress_on_hand_loss and not hand_present:
             allow_cursor = False
             cursor_reason = "suppressed_hand_loss"
-        elif self.cfg.suppress_on_feature_instability and not feature_ok:
+        elif (
+            self.cfg.suppress_on_feature_instability
+            and not feature_ok
+            and not self._rules_hold_confirms_label(suite_out, cursor_label)
+        ):
             allow_cursor = False
             cursor_reason = "suppressed_unstable_prediction"
 
@@ -94,7 +134,11 @@ class ExecutionSafetyGate:
                 allow_primary = False
                 primary_reason = "suppressed_hand_loss"
                 cancel_primary_drag = True
-            elif self.cfg.suppress_on_feature_instability and not feature_ok:
+            elif (
+                self.cfg.suppress_on_feature_instability
+                and not feature_ok
+                and not self._rules_hold_confirms_label(suite_out, "PINCH_INDEX")
+            ):
                 allow_primary = False
                 primary_reason = "suppressed_unstable_prediction"
                 cancel_primary_drag = True
@@ -106,22 +150,24 @@ class ExecutionSafetyGate:
             if self.cfg.suppress_on_hand_loss and not hand_present:
                 allow_primary = False
                 primary_reason = "suppressed_hand_loss"
-            elif self.cfg.suppress_on_feature_instability and not feature_ok:
-                allow_primary = False
-                primary_reason = "suppressed_unstable_prediction"
             self._primary_click_tainted = False
         elif primary_state == PrimaryInteractionState.NEUTRAL and primary_action == "NO_ACTION":
             self._primary_click_tainted = False
 
         allow_secondary = True
         secondary_reason = "ok"
-        if general_out.secondary.intent.action_name == "SECONDARY_RIGHT_CLICK":
-            if self.cfg.suppress_on_hand_loss and not hand_present:
+        secondary_action = general_out.secondary.intent.action_name
+        secondary_state = general_out.secondary.state
+        if secondary_action == "SECONDARY_RIGHT_CLICK":
+            if self._secondary_click_tainted:
+                allow_secondary = False
+                secondary_reason = "suppressed_tainted_click"
+                self._secondary_click_tainted = False
+            elif self.cfg.suppress_on_hand_loss and not hand_present:
                 allow_secondary = False
                 secondary_reason = "suppressed_hand_loss"
-            elif self.cfg.suppress_on_feature_instability and not feature_ok:
-                allow_secondary = False
-                secondary_reason = "suppressed_unstable_prediction"
+        elif secondary_state == SecondaryInteractionState.NEUTRAL and secondary_action == "NO_ACTION":
+            self._secondary_click_tainted = False
 
         allow_scroll = True
         scroll_reason = "ok"
@@ -129,9 +175,6 @@ class ExecutionSafetyGate:
             if self.cfg.suppress_on_hand_loss and not hand_present:
                 allow_scroll = False
                 scroll_reason = "suppressed_hand_loss"
-            elif self.cfg.suppress_on_feature_instability and not feature_ok:
-                allow_scroll = False
-                scroll_reason = "suppressed_unstable_prediction"
 
         return ExecutionSafetyDecision(
             allow_cursor=allow_cursor,
@@ -158,7 +201,11 @@ class ExecutionSafetyGate:
         feature_ok = suite_out is not None and getattr(suite_out, "feature_reason", None) == "ok"
         if self.cfg.suppress_on_hand_loss and not hand_present:
             return PresentationSafetyDecision(False, "suppressed_hand_loss")
-        if self.cfg.suppress_on_feature_instability and not feature_ok:
+        if (
+            self.cfg.suppress_on_feature_instability
+            and not feature_ok
+            and not self._rules_hold_confirms_label(suite_out, presentation_out.intent.gesture_label)
+        ):
             return PresentationSafetyDecision(False, "suppressed_unstable_prediction")
         if not presentation_out.context.allowed or not presentation_out.context.confident:
             return PresentationSafetyDecision(False, f"context_not_allowed:{presentation_out.context.reason}")

@@ -33,37 +33,38 @@ class Phase6PrimaryInteractionTests(unittest.TestCase):
         self.secondary = SecondaryInteractionController()
         self.cursor = CursorPreviewController()
 
-    def test_primary_pinch_release_enters_click_pending_then_emits_single_click(self):
+    def test_primary_pinch_release_emits_single_click_immediately_by_default(self):
         first = self.controller.update(gesture_label="PINCH_INDEX", cursor_point=pt(0.20, 0.20), now=0.00)
         self.assertEqual(first.state, PrimaryInteractionState.PRIMARY_PINCH_CANDIDATE)
         self.assertTrue(first.owns_state)
 
         released = self.controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.05)
-        self.assertEqual(released.state, PrimaryInteractionState.CLICK_PENDING)
-        self.assertEqual(released.intent.action_name, "NO_ACTION")
-
-        waiting = self.controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.20)
-        self.assertEqual(waiting.state, PrimaryInteractionState.CLICK_PENDING)
-        self.assertEqual(waiting.intent.action_name, "NO_ACTION")
-
-        clicked = self.controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.40)
-        self.assertEqual(clicked.state, PrimaryInteractionState.NEUTRAL)
-        self.assertEqual(clicked.intent.action_name, "PRIMARY_CLICK")
+        self.assertEqual(released.state, PrimaryInteractionState.NEUTRAL)
+        self.assertEqual(released.intent.action_name, "PRIMARY_CLICK")
 
     def test_double_click_resolves_without_single_click_first(self):
-        self.controller.update(gesture_label="PINCH_INDEX", cursor_point=pt(0.20, 0.20), now=0.00)
-        first_release = self.controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.05)
+        controller = PrimaryInteractionController(
+            cfg=PrimaryInteractionConfig(
+                drag_start_distance=0.05,
+                click_release_tolerance=0.02,
+                double_click_window_s=0.30,
+                hand_loss_grace_s=0.10,
+                enable_double_click=True,
+            )
+        )
+        controller.update(gesture_label="PINCH_INDEX", cursor_point=pt(0.20, 0.20), now=0.00)
+        first_release = controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.05)
         self.assertEqual(first_release.state, PrimaryInteractionState.CLICK_PENDING)
         self.assertEqual(first_release.intent.action_name, "NO_ACTION")
 
-        second_press = self.controller.update(gesture_label="PINCH_INDEX", cursor_point=pt(0.20, 0.20), now=0.12)
+        second_press = controller.update(gesture_label="PINCH_INDEX", cursor_point=pt(0.20, 0.20), now=0.12)
         self.assertEqual(second_press.state, PrimaryInteractionState.PRIMARY_PINCH_CANDIDATE)
 
-        double_clicked = self.controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.18)
+        double_clicked = controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.18)
         self.assertEqual(double_clicked.state, PrimaryInteractionState.NEUTRAL)
         self.assertEqual(double_clicked.intent.action_name, "PRIMARY_DOUBLE_CLICK")
 
-        after = self.controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.45)
+        after = controller.update(gesture_label=None, cursor_point=pt(0.21, 0.20), now=0.45)
         self.assertEqual(after.intent.action_name, "NO_ACTION")
 
     def test_drag_requires_movement_not_time(self):

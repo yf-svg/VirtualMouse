@@ -1,11 +1,19 @@
 # INTERFACES + CONTRACTS
 
+## CHANGE CONTROL
+
+- `docs/AI_CHANGE_POLICY.md` is mandatory before implementation work.
+- Contract/default changes require explicit user approval before code or doc updates.
+- Tracker/docs may record approved decisions only; they must not normalize unapproved drift.
+
 ## CORE INTERFACES
 
 ### `HandTracker.detect(frame_bgr)`
 - in: BGR frame
 - out: `DetectedHand(landmarks, handedness)` | `None`
-- invariant: MediaPipe-style 21 landmarks; single-hand path
+- invariant:
+  - MediaPipe-style 21 landmarks; single-hand path
+  - handedness exposed to runtime is normalized to the user's physical hand unless the inference input is explicitly marked mirrored
 
 ### `assess_hand_input_quality(landmarks)`
 - out: `HandInputQuality`
@@ -16,7 +24,7 @@
 - invariant: schema = `phase3.v2`; fixed dimension
 
 ### `GestureEngine.process(hand|None)`
-- out: `EngineOut(snapshot, candidates, decision, temporal, feature_vector, feature_temporal, quality)`
+- out: `EngineOut(snapshot, raw_candidates, candidates, decision, temporal, feature_vector, feature_temporal, quality)`
 - invariant: validation-first; never raw label only
 
 ### `SVMClassifier.predict(feature_vector|None)`
@@ -27,11 +35,13 @@
   - `training_candidate` must be rejected at load time
 
 ### `GestureSuite.detect(hand)`
-- out: `GestureSuiteOut(chosen, stable, eligible, candidates, reason, down, up, source, confidence, rule_chosen, ml_chosen, ml_reason, feature_reason, hold_frames, gate_reason)`
+- out: `GestureSuiteOut(chosen, stable, eligible, raw_candidates, candidates, reason, down, up, source, confidence, rule_chosen, ml_chosen, ml_reason, feature_reason, hold_frames, gate_reason)`
 - invariant:
   - ML accepted only if schema/dim/confidence/feature_reason are valid
   - brief ML confidence dips may retain current ML label via hysteresis
   - otherwise rules fallback
+  - generic suite behavior stays validation-first; the live ops runtime may opt into explicit priority resolution through the ops-set runtime policy so click/scroll/control gestures survive overlap with lower-value shape labels
+  - `raw_candidates` preserves detector output before mode filtering for debug/overlay use
   - `stable` = confirmed label; `eligible` = hold-qualified label for future auth/actions
   - `down/up` are `eligible` edges, not raw chosen edges
 
@@ -55,7 +65,9 @@
 
 ### `ModeRouter.route_auth_edge(gesture_label|None, now=...)`
 - out: `RouteOut(state, suite_key, auth_status, auth_progress_text, auth_out)`
-- invariant: owns lock/authenticate/activate-general transitions; runtime loop must delegate auth state policy here
+- invariant:
+  - owns lock/authenticate/activate-general transitions; runtime loop must delegate auth state policy here
+  - successful auth enters `ACTIVE_GENERAL` immediately; there is no separate hidden “enter general mode” control path
 
 ### `ModeRouter.request_sleep()` / `wake_for_auth()` / `lock()`
 - out: `RouteOut(...)`
@@ -67,7 +79,9 @@
 
 ### `ModeRouter.sync_presentation_permission(allowed)`
 - out: `RouteOut(...)`
-- invariant: only `ACTIVE_GENERAL -> ACTIVE_PRESENTATION` on allow and `ACTIVE_PRESENTATION -> ACTIVE_GENERAL` on deny; locked/auth states ignore presentation permission
+- invariant:
+  - only `ACTIVE_GENERAL -> ACTIVE_PRESENTATION` on allow and `ACTIVE_PRESENTATION -> ACTIVE_GENERAL` on deny; locked/auth states ignore presentation permission
+  - current product rule is automatic presentation activation from confident foreground context (or override), not gesture-entered presentation mode
 
 ### `WindowWatch.presentation_context()`
 - out: `PresentationContext(...)`
@@ -86,14 +100,18 @@
 
 ### `cursor_point_from_landmarks(landmarks)`
 - out: abstract normalized `CursorPoint(x, y)` | `None`
-- invariant: cursor-space input is gesture-agnostic; primary interaction must not depend on a fixed cursor-pose label
+- invariant:
+  - cursor-space input is gesture-agnostic; primary interaction must not depend on a fixed cursor-pose label
+  - current runtime uses a palm-centered cursor anchor rather than fingertip anchoring so pinch articulation does not masquerade as drag/click movement
+  - current runtime mirrors cursor-space x by default so live cursor motion matches the mirrored selfie preview
 
 ### `PrimaryInteractionController.update(gesture_label|None, cursor_point|None, now=...)`
 - out: `PrimaryInteractionOut(state, intent, owns_state, movement, cursor_point)`
 - invariant:
   - consumes only gated `PINCH_INDEX` signals + abstract cursor-space movement
   - drag starts from movement threshold, never duration alone
-  - first valid release enters pending click; second valid release inside window -> double click
+  - default fallback-mouse behavior emits single click immediately on a valid release
+  - delayed pending/double-click semantics are optional policy, not the default live-click path
   - hand loss must fail safe; no ghost click/drag
   - current cursor-space point is exposed so live drag can reuse dry-run state without bypassing controllers
 
@@ -125,7 +143,15 @@
 - out: `CursorPolicyDecision(eligible, gesture_label, reason, provisional)`
 - invariant:
   - current cursor pose assumption stays localized here
+  - current default cursor-ownership pose is `CLOSED_PALM`; changing it later must remain a policy/config decision, not a controller rewrite
   - changing cursor pose later must not require interaction-controller rewrites
+
+### `resolve_operator_override_policy(...)`
+- out: `ResolvedOperatorOverridePolicy`
+- invariant:
+  - overrides must remain centralized and fail-safe
+  - current supported execution overrides include `cursor_test`, which enables live OS cursor output only for the cursor subsystem and leaves primary/secondary/scroll/presentation execution disabled
+  - current default execution override is `fallback_live`, which enables the full live rule-fallback runtime through the existing executor/safety seams while keeping the underlying dry-run controllers unchanged
 
 ### `CursorPreviewController.update(..., higher_priority_owned=...)`
 - out: `CursorPreviewOut(state, intent, owns_state, preview_point, movement, policy)`
@@ -250,12 +276,23 @@
 
 ## STUB CONTRACTS
 - `app/modes/general.py` -> no action semantics defined yet
-- `app/modes/general.py` -> full General Mode dry-run stack is defined; cursor pose policy remains provisional but isolated
+- `app/modes/general.py` -> full General Mode dry-run stack is defined; cursor pose policy remains provisional but isolated, with `CLOSED_PALM` as the current default ownership pose
 - `app/modes/presentation.py` -> presentation resolver now exists; `OPEN_PALM` start and `PEACE_SIGN` exit remain provisional/localized until explicitly re-approved
 - `app/control/actions.py` -> dry-run contract only
 - `app/control/execution.py` / `mouse.py` -> live General + Presentation execution seams exist; explicit `dry_run`/`live` policy + runtime safety gate keep them fail-safe by default
+- `app/control/mouse.py` -> Windows button/scroll injection uses `SendInput(...)` rather than legacy `mouse_event(...)`; executor must surface backend failures as explicit execution reasons instead of silently assuming success
+- `app/lifecycle/runtime_loop.py` -> runtime emits structured terminal pipeline logs across detection, gesture selection, mode routing, General Mode controller ownership, safety, execution, and OS injection; diagnosis should prefer these real seam logs over overlay-only inference
+- `app/control/execution_safety.py` -> feature-instability suppression must not kill clean release-driven clicks or active scroll output on the final transition frame alone; only genuinely tainted candidate ownership or hand loss should suppress those actions
+- `app/control/execution_safety.py` -> when the runtime source is `rules` and `PINCH_INDEX` / `PINCH_MIDDLE` remain stable or eligible, click tainting must not be triggered by `feature_reason=unstable` alone; the fallback rules path is allowed to trust its own stable hold signal
+- `app/control/execution_safety.py` -> prediction-gate `release_pending` frames that still carry stable/eligible `PINCH_INDEX` / `PINCH_MIDDLE` must remain trusted for click-taint decisions even if `source` has already fallen back to `none`; release debounce must not poison an otherwise clean click
+- `app/control/execution_safety.py` -> the same `rules`-stable exception applies to the approved live cursor gesture, primary drag hold/start, and presentation playback gestures; feature-window instability alone must not suppress those actions while the rule-held gesture remains stably present
+- `app/control/cursor_preview.py` / `app/control/execution.py` -> cursor preview activation must seed from the real current OS cursor position before the first active move, so entering General Mode preserves the visible pointer location instead of teleporting to the hand-normalized anchor
+- `app/lifecycle/runtime_loop.py` -> manual `ESC/Q` exit is ignored until the first frame has actually been presented and the startup guard window has elapsed; this prevents spurious OpenCV startup key events from shutting the app down before it is usable
 - `app/lifecycle/operator_lifecycle.py` -> manual exit is explicit; gesture exit is localized to `THUMBS_DOWN` eligible edges in active operator states and remains provisional
+- `app/lifecycle/operator_lifecycle.py` -> `THUMBS_DOWN` on an eligible edge is mode-scoped: in `ACTIVE_PRESENTATION` it requests a presentation-off route change instead of process exit, and in `ACTIVE_GENERAL` it may exit the app only when higher-priority controllers are neutral so scroll/drag/clutch transitions cannot accidentally terminate the session
+- `app/modes/router.py` -> manual presentation-off requests latch General Mode while presentation context remains allowed; auto-presentation may re-enter only after context first clears and then becomes allowed again
 - `app/lifecycle/operator_policy.py` -> centralized execution/routing override policy exists; invalid overrides fail safe to conservative routing and non-live execution
+- `tools/record_gestures.py` -> recorder is now rules-guided and capture-safe: target gesture labels must be canonical, default capture requires both quality pass and target-label eligibility, overwriting existing output requires explicit `--overwrite`, tracker sync happens automatically when full collection context is present unless `--no-tracker-sync` is used, compact raw-landmark sidecars are written by default, and optional accepted-sample snapshot sidecars must stay storage-conscious hand crops rather than full-frame dumps
 
 ## MUST NOT SILENTLY CHANGE
 - `phase3.v2` feature contract

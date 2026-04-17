@@ -18,8 +18,8 @@ from tools.generate_dataset_tracker import (
 class GenerateDatasetTrackerTests(unittest.TestCase):
     def test_labels_for_scope_matches_expected_counts(self):
         self.assertEqual(len(labels_for_scope("auth")), 9)
-        self.assertEqual(len(labels_for_scope("ops")), 15)
-        self.assertEqual(len(labels_for_scope("unified")), 20)
+        self.assertEqual(len(labels_for_scope("ops")), 16)
+        self.assertEqual(len(labels_for_scope("unified")), 21)
 
     def test_recommended_mode_marks_pinch_labels_manual(self):
         self.assertEqual(recommended_mode_for_label("PINCH_INDEX"), "MANUAL")
@@ -68,7 +68,7 @@ class GenerateDatasetTrackerTests(unittest.TestCase):
                 reader = csv.DictReader(handle)
                 loaded = list(reader)
 
-        self.assertEqual(len(loaded), 20)
+        self.assertEqual(len(loaded), 21)
         self.assertEqual(reader.fieldnames[0:3], ["round", "scope", "user_id"])
         self.assertEqual(loaded[0]["scope"], "unified")
 

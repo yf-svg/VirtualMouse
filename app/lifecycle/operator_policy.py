@@ -5,7 +5,14 @@ from dataclasses import dataclass, replace
 from app.config import CONFIG, ExecutionConfig, OperatorOverrideConfig
 from app.control.window_watch import PresentationContext
 
-_VALID_EXECUTION_OVERRIDES = frozenset({"inherit", "dry_run", "live", "disable"})
+_VALID_EXECUTION_OVERRIDES = frozenset({
+    "inherit",
+    "dry_run",
+    "live",
+    "disable",
+    "cursor_test",
+    "fallback_live",
+})
 _VALID_ROUTING_OVERRIDES = frozenset({"auto", "force_general", "force_presentation"})
 
 
@@ -108,6 +115,28 @@ def _apply_execution_override(
         return execution_cfg
     if execution_override == "live":
         return replace(execution_cfg, profile="live")
+    if execution_override == "cursor_test":
+        return replace(
+            execution_cfg,
+            profile="live",
+            enable_live_os=True,
+            enable_live_cursor=True,
+            enable_live_primary=False,
+            enable_live_secondary=False,
+            enable_live_scroll=False,
+            enable_live_presentation=False,
+        )
+    if execution_override == "fallback_live":
+        return replace(
+            execution_cfg,
+            profile="live",
+            enable_live_os=True,
+            enable_live_cursor=True,
+            enable_live_primary=True,
+            enable_live_secondary=True,
+            enable_live_scroll=True,
+            enable_live_presentation=True,
+        )
 
     return replace(
         execution_cfg,

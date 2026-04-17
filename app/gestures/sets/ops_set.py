@@ -18,3 +18,16 @@ OPS_PRIORITY = [
     "POINT_RIGHT",
     "POINT_LEFT",
 ]
+
+# Live ops runtime is allowed to resolve overlaps by priority so higher-value
+# interaction gestures survive to the controllers instead of being nulled out
+# as ambiguous.
+OPS_RUNTIME_ALLOW_PRIORITY = True
+
+
+def ops_runtime_suite_kwargs() -> dict[str, object]:
+    return {
+        "allowed": OPS_ALLOWED,
+        "priority": OPS_PRIORITY,
+        "allow_priority": OPS_RUNTIME_ALLOW_PRIORITY,
+    }

@@ -7,6 +7,23 @@ import cv2
 import mediapipe as mp
 
 
+def normalize_mediapipe_handedness(
+    handedness: str | None,
+    *,
+    input_is_mirrored: bool,
+) -> str | None:
+    """
+    MediaPipe Hands assumes selfie-style mirrored input for handedness.
+    Normalize to the user's physical hand unless the incoming detection frame is
+    already mirrored before inference.
+    """
+    if handedness not in {"Left", "Right"}:
+        return handedness
+    if input_is_mirrored:
+        return handedness
+    return "Right" if handedness == "Left" else "Left"
+
+
 @dataclass(frozen=True)
 class DetectedHand:
     """
@@ -30,7 +47,9 @@ class HandTracker:
         min_detection_confidence: float = 0.5,
         min_tracking_confidence: float = 0.5,
         model_complexity: int = 0,
+        input_is_mirrored: bool = False,
     ):
+        self._input_is_mirrored = bool(input_is_mirrored)
         self._mp_hands = mp.solutions.hands
         self._hands = self._mp_hands.Hands(
             static_image_mode=False,
@@ -54,7 +73,11 @@ class HandTracker:
         lm = results.multi_hand_landmarks[0]
         handedness = None
         if results.multi_handedness:
-            handedness = results.multi_handedness[0].classification[0].label  # Left/Right
+            raw_handedness = results.multi_handedness[0].classification[0].label
+            handedness = normalize_mediapipe_handedness(
+                raw_handedness,
+                input_is_mirrored=self._input_is_mirrored,
+            )
 
         return DetectedHand(landmarks=lm, handedness=handedness)
 

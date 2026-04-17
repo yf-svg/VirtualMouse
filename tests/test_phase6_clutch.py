@@ -28,6 +28,7 @@ class Phase6ClutchTests(unittest.TestCase):
                 click_release_tolerance=0.02,
                 double_click_window_s=0.30,
                 hand_loss_grace_s=0.10,
+                enable_double_click=True,
             )
         )
         self.secondary = SecondaryInteractionController()

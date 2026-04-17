@@ -15,6 +15,7 @@ class GestureSuiteOut:
     chosen: Optional[str]
     stable: Optional[str]
     eligible: Optional[str]
+    raw_candidates: Set[str]
     candidates: Set[str]
     reason: str
     down: Optional[str]
@@ -123,6 +124,7 @@ class GestureSuite:
             chosen=chosen,
             stable=temporal.stable,
             eligible=temporal.eligible,
+            raw_candidates=out.raw_candidates,
             candidates=out.candidates,
             reason=reason,
             down=temporal.down,

@@ -38,7 +38,7 @@ class CheckCollectionReadinessTests(unittest.TestCase):
             )
 
         self.assertTrue(report.ok)
-        self.assertEqual(report.tracker_rows, 80)
+        self.assertEqual(report.tracker_rows, 84)
         self.assertEqual(report.user_count, 2)
         self.assertEqual(report.condition_count, 2)
 

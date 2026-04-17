@@ -11,7 +11,8 @@ Secondary objective:
 - make collection simple enough that multiple operators can follow the same process without corrupting the dataset
 
 This protocol is for data collection only.
-It does not change the feature schema, the recorder save format, or the runtime gesture logic.
+It does not change the feature schema or the runtime gesture logic.
+The recorder now saves the session JSON plus a compact raw-landmark sidecar by default, with optional accepted-sample snapshot sidecars.
 
 ---
 
@@ -36,11 +37,12 @@ The validation pipeline currently accepts the union of the auth and ops gesture 
 15. `PINCH_RING`
 16. `POINT_LEFT`
 17. `POINT_RIGHT`
-18. `THREE`
-19. `THUMBS_DOWN`
-20. `TWO`
+18. `SHAKA`
+19. `THREE`
+20. `THUMBS_DOWN`
+21. `TWO`
 
-This 20-label inventory is the current trainable label contract for dataset validation.
+This 21-label inventory is the current trainable label contract for dataset validation.
 
 ---
 
@@ -73,6 +75,7 @@ Ops labels:
 - `FIST`
 - `CLOSED_PALM`
 - `OPEN_PALM`
+- `SHAKA`
 - `PEACE_SIGN`
 - `L`
 - `BRAVO`
@@ -88,14 +91,14 @@ Presentation labels:
 - `POINT_RIGHT`
 - `POINT_LEFT`
 - `OPEN_PALM`
-- `FIST`
+- `PEACE_SIGN`
 
 This set is already fully covered by the ops set.
 Do not create separate presentation-only labels in the dataset.
 
 ### Unified Set
 
-If you want one dataset artifact that covers all currently trainable labels, collect the full 20-label union.
+If you want one dataset artifact that covers all currently trainable labels, collect the full 21-label union.
 
 ---
 
@@ -108,11 +111,11 @@ Choose one of these collection scopes before recording:
 - best when the immediate goal is ordered auth-sequence training
 
 2. Ops-only dataset:
-- collect the 15 ops labels
+- collect the 16 ops labels
 - best when the immediate goal is runtime control recognition
 
 3. Unified dataset:
-- collect the full 20-label union
+- collect the full 21-label union
 - best when the goal is one reusable training pool for all current gesture categories
 
 Recommended default:
@@ -145,10 +148,10 @@ Auth-only:
 - `9 labels x 2 users x 2 backgrounds x 60 = 2160 accepted samples`
 
 Ops-only:
-- `15 labels x 2 users x 2 backgrounds x 60 = 3600 accepted samples`
+- `16 labels x 2 users x 2 backgrounds x 60 = 3840 accepted samples`
 
 Unified:
-- `20 labels x 2 users x 2 backgrounds x 60 = 4800 accepted samples`
+- `21 labels x 2 users x 2 backgrounds x 60 = 5040 accepted samples`
 
 Recommended extension after the minimum is complete:
 - add `U03`
@@ -200,6 +203,14 @@ Example:
 
 When both `scope` and `round` are present, the recorder now runs the readiness check automatically before opening the camera.
 If either field is missing, the preflight is skipped so ad hoc recording still works normally.
+The recorder also now validates the target gesture label against the canonical registry and refuses to overwrite an existing output file unless `--overwrite` is provided.
+The recorder now also saves a compact `.landmarks.npz` sidecar by default:
+- raw MediaPipe `x/y/z` landmarks
+- compressed `float16`
+- aligned to accepted samples in session order
+
+Optional accepted-sample snapshots are available with `--save-snapshots`.
+Those snapshots are saved as low-resolution cropped hand JPEGs rather than full frames so they stay useful for audit/future image-model work without consuming unnecessary storage.
 
 ---
 
@@ -214,13 +225,19 @@ For each session:
 - correct label
 - correct user id
 - correct mode
+- guide shows the intended target label
 - gate reads `Ready to capture` before expecting acceptance
 5. Use `AUTO` mode for stable gestures.
 6. Use `MANUAL` mode for pinch-family labels if auto capture becomes noisy.
 7. Watch accepted and rejected counters during the session.
-8. If the session quality is poor, discard it and restart instead of saving weak data.
-9. At the save confirmation screen, confirm the accepted count, rejected count, duration, and output path.
-10. Save only if the session is clean.
+8. The recorder now blocks capture until the target label is confirmed.
+   If you see `Hold ... steady until confirmed` or `Target mismatch: saw ...`, do not treat the current pose as valid data.
+9. Use `--allow-label-mismatch` only for deliberate ad hoc debugging, not for structured ML collection.
+10. Keep raw landmarks enabled for normal ML collection.
+11. Enable `--save-snapshots` only when you want extra audit/image artifacts; snapshots are optional and off by default to minimize storage.
+12. If the session quality is poor, discard it and restart instead of saving weak data.
+13. At the save confirmation screen, confirm the accepted count, rejected count, acceptance rate, duration, and output path.
+14. Save only if the session is clean.
 
 ---
 
@@ -270,6 +287,7 @@ Use `AUTO` mode by default for:
 - `L`
 - `ONE`
 - `OPEN_PALM`
+- `SHAKA`
 - `PEACE_SIGN`
 - `POINT_LEFT`
 - `POINT_RIGHT`
@@ -303,16 +321,17 @@ If you are collecting the unified dataset, use this order for every user:
 8. `FOUR`
 9. `FIVE`
 10. `OPEN_PALM`
-11. `PEACE_SIGN`
-12. `L`
-13. `POINT_RIGHT`
-14. `POINT_LEFT`
-15. `PINCH_INDEX`
-16. `PINCH_MIDDLE`
-17. `PINCH_RING`
-18. `PINCH_PINKY`
-19. `PINCH_IM`
-20. `PINCH_IMRP`
+11. `SHAKA`
+12. `PEACE_SIGN`
+13. `L`
+14. `POINT_RIGHT`
+15. `POINT_LEFT`
+16. `PINCH_INDEX`
+17. `PINCH_MIDDLE`
+18. `PINCH_RING`
+19. `PINCH_PINKY`
+20. `PINCH_IM`
+21. `PINCH_IMRP`
 
 Complete all `plain` sessions first, then all `cluttered` sessions.
 
@@ -536,7 +555,14 @@ The standalone command is still useful when:
 - you regenerated the tracker and want confirmation before opening the recorder
 - you are debugging a readiness failure
 
-For every saved or discarded session, update the corresponding tracker row with:
+When `scope`, `round`, `background`, and `lighting` are present, the recorder now auto-syncs the matching tracker row on save/discard.
+
+Manual tracker updates are only needed when:
+- you recorded ad hoc without the full capture-context
+- you passed `--no-tracker-sync`
+- you need to correct notes/status after reviewing the session later
+
+The tracker row fields the recorder updates are:
 - `accepted_samples`
 - `rejected_attempts`
 - `status`
@@ -562,14 +588,14 @@ Auth-only dataset complete:
 - no obviously corrupted or mixed-label sessions remain
 
 Ops-only dataset complete:
-- all 15 ops labels are collected
+- all 16 ops labels are collected
 - at least 2 users are fully collected
 - both required backgrounds are fully collected
 - every required session reached its accepted target
 - no obviously corrupted or mixed-label sessions remain
 
 Unified dataset complete:
-- all 20 current trainable labels are collected
+- all 21 current trainable labels are collected
 - at least 2 users are fully collected
 - both required backgrounds are fully collected
 - every required session reached its accepted target

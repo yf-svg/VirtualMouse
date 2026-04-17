@@ -12,17 +12,24 @@ from app.control.actions import format_action_intent
 from app.control.clutch import ClutchController
 from app.control.execution import ExecutionBatchReport, OSActionExecutor
 from app.control.execution_safety import ExecutionSafetyGate
-from app.control.cursor_preview import CursorPreviewController
+from app.control.cursor_preview import CursorPreviewController, CursorPreviewState
 from app.control.cursor_space import cursor_point_from_landmarks
 from app.control.primary_interaction import PrimaryInteractionController
 from app.control.secondary_interaction import SecondaryInteractionController
 from app.control.scroll_mode import ScrollModeController
 from app.control.window_watch import PresentationContext, WindowWatch
 from app.gestures.sets.auth_set import auth_allowed_for_cfg, auth_priority_for_cfg
+from app.gestures.sets.ops_set import ops_runtime_suite_kwargs
 from app.gestures.suite import GestureSuite
 from app.lifecycle.operator_lifecycle import OperatorLifecycleController, neutralize_runtime_ownership
 from app.lifecycle.operator_policy import ResolvedOperatorOverridePolicy, resolve_operator_override_policy
-from app.lifecycle.runtime_status import _format_execution_policy_status, _format_presentation_context
+from app.lifecycle.runtime_status import (
+    _format_cursor_runtime,
+    _format_execution_policy_status,
+    _format_general_controls,
+    _format_mode_status,
+    _format_presentation_context,
+)
 from app.modes.general import resolve_general_action
 from app.modes.router import ModeRouter
 from app.modes.presentation import PresentationModeOut, resolve_presentation_action
@@ -81,6 +88,8 @@ class RuntimeState:
     auth_status: str = "idle"
     auth_progress_text: str = "Auth starting"
     lifecycle_status_text: str = "LIFE:ready"
+    startup_t0: float = 0.0
+    first_frame_presented: bool = False
 
 
 def _mirror_landmarks(landmarks):
@@ -101,7 +110,10 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
         height=CONFIG.cam_height,
     )
     pre = Preprocessor(enable=CONFIG.enable_preprocessing)
-    tracker = HandTracker(max_num_hands=1)
+    tracker = HandTracker(
+        max_num_hands=1,
+        input_is_mirrored=CONFIG.tracker_input_is_mirrored,
+    )
     smoother = SelectiveLandmarkSmoother(
         strong_min_cutoff=1.6,
         strong_beta=0.18,
@@ -111,7 +123,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
     )
     auth_suite = GestureSuite(allowed=auth_allowed, priority=auth_priority, allow_priority=True)
     auth_interpreter = AuthGestureInterpreter(auth_cfg=router.auth_cfg)
-    ops_suite = GestureSuite()
+    ops_suite = GestureSuite(**ops_runtime_suite_kwargs())
     presentation_interpreter = PresentationGestureInterpreter()
     clutch = ClutchController()
     scroll_mode = ScrollModeController()
@@ -169,7 +181,10 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
 
 
 def _initial_runtime_state() -> RuntimeState:
-    return RuntimeState(cam_fps_t0=time.perf_counter())
+    return RuntimeState(
+        cam_fps_t0=time.perf_counter(),
+        startup_t0=time.monotonic(),
+    )
 
 
 def _update_camera_fps(seq: int, state: RuntimeState) -> None:
@@ -192,6 +207,7 @@ def _format_hand_overlay(handed: str | None, out) -> str:
         f"CHOSEN:{out.chosen or 'NONE'} | "
         f"STABLE:{out.stable or 'NONE'} | "
         f"READY:{out.eligible or 'NONE'} | "
+        f"RAW:{','.join(sorted(out.raw_candidates)) if out.raw_candidates else 'NONE'} | "
         f"CAND:{','.join(sorted(out.candidates)) if out.candidates else 'NONE'} | "
         f"HOLD:{out.hold_frames} | "
         f"EDGE:+{out.down or '-'} -{out.up or '-'} | "
@@ -241,6 +257,79 @@ def _request_exit_from_key(ctx: RuntimeContext, key: int):
     return ctx.operator_lifecycle.request_from_key(key)
 
 
+def _manual_exit_armed(ctx: RuntimeContext, state: RuntimeState, *, now: float) -> bool:
+    guard_s = float(getattr(ctx.operator_lifecycle.cfg, "startup_manual_exit_guard_s", 0.0) or 0.0)
+    if not state.first_frame_presented:
+        return False
+    return (now - state.startup_t0) >= max(0.0, guard_s)
+
+
+def _consume_exit_request(ctx: RuntimeContext, state: RuntimeState, *, key: int, now: float):
+    request = _request_exit_from_key(ctx, key)
+    if request is None:
+        return None
+    if request.source == "manual" and not _manual_exit_armed(ctx, state, now=now):
+        return None
+    return request
+
+
+def _pipeline_trace_enabled() -> bool:
+    return bool(getattr(getattr(CONFIG, "runtime_debug", None), "pipeline_trace", False))
+
+
+def _log_pipeline(line: str) -> None:
+    if _pipeline_trace_enabled():
+        print(line, flush=True)
+
+
+def _log_detection(*, seq: int, hand_present: bool, handed: str | None, quality: str) -> None:
+    _log_pipeline(
+        f"[DETECTION][seq={seq}] hand={hand_present} handed={handed or 'Unknown'} quality={quality}"
+    )
+
+
+def _log_gesture(*, seq: int, out) -> None:
+    raw = ",".join(sorted(out.raw_candidates)) if out.raw_candidates else "NONE"
+    cand = ",".join(sorted(out.candidates)) if out.candidates else "NONE"
+    _log_pipeline(
+        f"[GESTURE][seq={seq}] "
+        f"chosen={out.chosen or 'NONE'} stable={out.stable or 'NONE'} eligible={out.eligible or 'NONE'} "
+        f"source={out.source} raw={raw} cand={cand} gate={out.gate_reason}"
+    )
+
+
+def _log_mode(*, seq: int, state: AppState, route_summary: str, path: str) -> None:
+    _log_pipeline(
+        f"[MODE][seq={seq}] state={state.value} path={path} route={route_summary}"
+    )
+
+
+def _log_general(*, seq: int, stable_label: str | None, eligible_label: str | None, general_out) -> None:
+    _log_pipeline(
+        f"[GENERAL][seq={seq}] "
+        f"stable={stable_label or 'NONE'} eligible={eligible_label or 'NONE'} "
+        f"clutch={general_out.clutch.state.value} scroll={general_out.scroll.state.value}/{general_out.scroll.axis.value} "
+        f"primary={general_out.primary.state.value} secondary={general_out.secondary.state.value} "
+        f"cursor={general_out.cursor.state.value} intent={general_out.intent.action_name}"
+    )
+
+
+def _log_safety(*, seq: int, safety) -> None:
+    _log_pipeline(
+        f"[SAFETY][seq={seq}] "
+        f"cur={safety.cursor_reason} pri={safety.primary_reason} sec={safety.secondary_reason} scr={safety.scroll_reason}"
+    )
+
+
+def _log_exec(*, seq: int, policy_status: str, exec_report) -> None:
+    _log_pipeline(
+        f"[EXEC][seq={seq}] "
+        f"policy={policy_status} "
+        f"cursor={exec_report.cursor.reason} primary={exec_report.primary.reason} "
+        f"secondary={exec_report.secondary.reason} scroll={exec_report.scroll.reason}"
+    )
+
+
 def _perform_exit(
     ctx: RuntimeContext,
     state: RuntimeState,
@@ -273,6 +362,22 @@ def _perform_exit(
         cv2.imshow(ctx.window_name, frame_out)
         cv2.waitKey(1)
 
+
+def _perform_presentation_exit(
+    ctx: RuntimeContext,
+    state: RuntimeState,
+    request,
+) -> None:
+    neutralization = neutralize_runtime_ownership(ctx, reason=request.reason)
+    ctx.presentation_interpreter.reset()
+    route = ctx.router.request_presentation_exit(source=request.source, reason=request.trigger)
+    state.auth_status = route.auth_status
+    state.auth_progress_text = route.auth_progress_text
+    state.lifecycle_status_text = ctx.operator_lifecycle.status_text(
+        request=request,
+        neutralization=neutralization,
+    )
+
 def run_loop(initial_state: AppState) -> None:
     cv2.setUseOptimized(True)
     try:
@@ -289,7 +394,7 @@ def run_loop(initial_state: AppState) -> None:
 
             if frame_raw is None:
                 key = cv2.waitKey(1) & 0xFF
-                request = _request_exit_from_key(ctx, key)
+                request = _consume_exit_request(ctx, state, key=key, now=time.monotonic())
                 if request is not None:
                     _perform_exit(ctx, state, request)
                     break
@@ -308,7 +413,7 @@ def run_loop(initial_state: AppState) -> None:
                 )
                 cv2.imshow(ctx.window_name, disp)
                 key = cv2.waitKey(1) & 0xFF
-                request = _request_exit_from_key(ctx, key)
+                request = _consume_exit_request(ctx, state, key=key, now=time.monotonic())
                 if request is not None:
                     _perform_exit(ctx, state, request, frame_disp=disp, base_extra=state.last_extra)
                     break
@@ -345,6 +450,9 @@ def run_loop(initial_state: AppState) -> None:
 
                 if ctx.router.state in {AppState.IDLE_LOCKED, AppState.AUTHENTICATING}:
                     out = ctx.auth_suite.detect(state.last_hand)
+                    _log_detection(seq=seq, hand_present=True, handed=handed, quality=out.feature_reason)
+                    _log_gesture(seq=seq, out=out)
+                    _log_mode(seq=seq, state=ctx.router.state, route_summary=route_decision.summary(), path="auth")
                     auth_runtime = ctx.auth_interpreter.update(
                         suite_out=out,
                         auth_state=ctx.router.current_auth_input_state,
@@ -374,68 +482,78 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_interpreter.reset()
                     ctx.auth_overlay_store.reset()
                     out = ctx.ops_suite.detect(state.last_hand)
-                    exit_request = ctx.operator_lifecycle.request_from_suite_out(
-                        suite_out=out,
-                        router_state=ctx.router.state,
+                    _log_detection(seq=seq, hand_present=True, handed=handed, quality=out.feature_reason)
+                    _log_gesture(seq=seq, out=out)
+                    cursor_point = cursor_point_from_landmarks(
+                        lm_smooth,
+                        anchor_mode=CONFIG.cursor_space.anchor_mode,
+                        mirror_x=CONFIG.cursor_space.mirror_x,
                     )
-                    if exit_request is not None:
-                        _perform_exit(
-                            ctx,
-                            state,
-                            exit_request,
-                            frame_disp=frame_disp,
-                            base_extra=(
-                                f"{_format_hand_overlay(handed, out)} | "
-                                f"{_format_presentation_context(presentation_context)} | "
-                                f"{_format_execution_policy_status(ctx, 'exit_pending', route_summary=route_decision.summary())}"
-                            ),
-                        )
-                        break
-                    cursor_point = cursor_point_from_landmarks(lm_smooth)
                     if ctx.router.state == AppState.ACTIVE_PRESENTATION:
-                        presentation_signal = ctx.presentation_interpreter.update(
+                        _log_mode(seq=seq, state=ctx.router.state, route_summary=route_decision.summary(), path="presentation")
+                        exit_request = ctx.operator_lifecycle.request_from_suite_out(
                             suite_out=out,
-                            hand_present=True,
+                            router_state=ctx.router.state,
                         )
-                        ctx.clutch.reset()
-                        ctx.scroll_mode.reset()
-                        ctx.primary_interaction.reset()
-                        ctx.secondary_interaction.reset()
-                        ctx.cursor_preview.reset()
-                        ctx.execution_safety.reset()
-                        presentation_out = resolve_presentation_action(
-                            gesture_label=presentation_signal.event_label,
-                            context=presentation_context,
-                        )
-                        safety = ctx.execution_safety.evaluate_presentation(
-                            suite_out=out,
-                            presentation_out=presentation_out,
-                            hand_present=True,
-                        )
-                        action_intent = presentation_out.intent
-                        exec_report = ctx.executor.apply_presentation_mode(
-                            presentation_out,
-                            allow=safety.allow,
-                            suppress_reason=safety.reason,
-                        )
-                        extra = (
-                            f"{_format_hand_overlay(handed, out)} | "
-                            f"{_format_presentation_context(presentation_context)} | "
-                            f"{presentation_signal.status_text()} | "
-                            f"CLT:{ctx.clutch.state.value} | "
-                            f"SCR:{ctx.scroll_mode.state.value} | "
-                            f"PRI:{ctx.primary_interaction.state.value} | "
-                            f"SEC:{ctx.secondary_interaction.state.value} | "
-                            f"CUR:{ctx.cursor_preview.state.value} | "
-                            f"{format_action_intent(action_intent)} | "
-                            f"{_format_execution_policy_status(ctx, safety.reason, route_summary=route_decision.summary())} | "
-                            f"{state.lifecycle_status_text} | "
-                            f"{_format_single_execution_report(exec_report)}"
-                        )
+                        if exit_request is not None and exit_request.effect == "exit_presentation":
+                            _perform_presentation_exit(ctx, state, exit_request)
+                            extra = (
+                                f"{_format_hand_overlay(handed, out)} | "
+                                f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
+                                f"{_format_presentation_context(presentation_context)} | "
+                                f"{_format_execution_policy_status(ctx, 'presentation_exit_pending', route_summary=route_decision.summary())} | "
+                                f"{state.lifecycle_status_text}"
+                            )
+                        else:
+                            presentation_signal = ctx.presentation_interpreter.update(
+                                suite_out=out,
+                                hand_present=True,
+                            )
+                            ctx.clutch.reset()
+                            ctx.scroll_mode.reset()
+                            ctx.primary_interaction.reset()
+                            ctx.secondary_interaction.reset()
+                            ctx.cursor_preview.reset()
+                            ctx.execution_safety.reset()
+                            presentation_out = resolve_presentation_action(
+                                gesture_label=presentation_signal.event_label,
+                                context=presentation_context,
+                            )
+                            safety = ctx.execution_safety.evaluate_presentation(
+                                suite_out=out,
+                                presentation_out=presentation_out,
+                                hand_present=True,
+                            )
+                            action_intent = presentation_out.intent
+                            exec_report = ctx.executor.apply_presentation_mode(
+                                presentation_out,
+                                allow=safety.allow,
+                                suppress_reason=safety.reason,
+                            )
+                            extra = (
+                                f"{_format_hand_overlay(handed, out)} | "
+                                f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
+                                f"{_format_presentation_context(presentation_context)} | "
+                                f"{presentation_signal.status_text()} | "
+                                f"CLT:{ctx.clutch.state.value} | "
+                                f"SCR:{ctx.scroll_mode.state.value} | "
+                                f"PRI:{ctx.primary_interaction.state.value} | "
+                                f"SEC:{ctx.secondary_interaction.state.value} | "
+                                f"CUR:{ctx.cursor_preview.state.value} | "
+                                f"{format_action_intent(action_intent)} | "
+                                f"{_format_execution_policy_status(ctx, safety.reason, route_summary=route_decision.summary())} | "
+                                f"{state.lifecycle_status_text} | "
+                                f"{_format_single_execution_report(exec_report)}"
+                            )
                     else:
                         ctx.presentation_interpreter.reset()
+                        _log_mode(seq=seq, state=ctx.router.state, route_summary=route_decision.summary(), path="general")
+                        cursor_policy = ctx.cursor_preview.policy.evaluate(out.eligible)
+                        if ctx.cursor_preview.state == CursorPreviewState.NEUTRAL and cursor_policy.eligible:
+                            ctx.cursor_preview.seed_preview_point(ctx.executor.current_cursor_normalized())
                         general_out = resolve_general_action(
-                            gesture_label=out.eligible,
+                            gesture_label=out.stable,
+                            cursor_gesture_label=out.eligible,
                             cursor_point=cursor_point,
                             clutch_controller=ctx.clutch,
                             scroll_controller=ctx.scroll_mode,
@@ -444,24 +562,48 @@ def run_loop(initial_state: AppState) -> None:
                             cursor_controller=ctx.cursor_preview,
                             now=frame_now,
                         )
+                        exit_request = ctx.operator_lifecycle.request_from_suite_out(
+                            suite_out=out,
+                            router_state=ctx.router.state,
+                            general_out=general_out,
+                        )
+                        if exit_request is not None and exit_request.effect == "exit_app":
+                            _perform_exit(
+                                ctx,
+                                state,
+                                exit_request,
+                                frame_disp=frame_disp,
+                                base_extra=(
+                                    f"{_format_hand_overlay(handed, out)} | "
+                                    f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
+                                    f"{_format_general_controls(ctx)} | "
+                                    f"{_format_execution_policy_status(ctx, 'exit_pending', route_summary=route_decision.summary())}"
+                                ),
+                            )
+                            break
                         safety = ctx.execution_safety.evaluate(
                             suite_out=out,
                             general_out=general_out,
                             hand_present=True,
                         )
+                        _log_general(seq=seq, stable_label=out.stable, eligible_label=out.eligible, general_out=general_out)
+                        _log_safety(seq=seq, safety=safety)
                         action_intent = general_out.intent
                         exec_report = ctx.executor.apply_general_mode(general_out, safety=safety)
+                        _log_exec(seq=seq, policy_status=ctx.executor.policy_status_text(), exec_report=exec_report)
                         cursor_preview = general_out.cursor.preview_point
                         cursor_preview_text = "CUR:None"
                         if cursor_preview is not None:
                             cursor_preview_text = f"CURPREV:{cursor_preview.x:.2f},{cursor_preview.y:.2f}"
                         extra = (
                             f"{_format_hand_overlay(handed, out)} | "
+                            f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
+                            f"{_format_general_controls(ctx)} | "
                             f"CLT:{general_out.clutch.state.value} | "
                             f"SCR:{general_out.scroll.state.value}/{general_out.scroll.axis.value} | "
                             f"PRI:{general_out.primary.state.value} | "
                             f"SEC:{general_out.secondary.state.value} | "
-                            f"CUR:{general_out.cursor.state.value}({general_out.cursor.policy.gesture_label or '-'}) | "
+                            f"{_format_cursor_runtime(general_out.cursor, exec_report.cursor)} | "
                             f"{cursor_preview_text} | "
                             f"{format_action_intent(action_intent)} | "
                             f"{_format_execution_policy_status(ctx, safety.summary(), route_summary=route_decision.summary())} | "
@@ -471,6 +613,7 @@ def run_loop(initial_state: AppState) -> None:
                 lm_draw = _mirror_landmarks(lm_smooth) if CONFIG.mirror_view else lm_smooth
                 ctx.tracker.draw(frame_disp, lm_draw)
             else:
+                _log_detection(seq=seq, hand_present=False, handed=None, quality="no_hand")
                 ctx.smoother.reset()
                 auth_overlay_state = None
                 if ctx.router.state in {AppState.IDLE_LOCKED, AppState.AUTHENTICATING}:
@@ -503,6 +646,7 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.presentation_interpreter.reset()
                     general_out = resolve_general_action(
                         gesture_label=None,
+                        cursor_gesture_label=None,
                         cursor_point=None,
                         clutch_controller=ctx.clutch,
                         scroll_controller=ctx.scroll_mode,
@@ -517,16 +661,22 @@ def run_loop(initial_state: AppState) -> None:
                         hand_present=False,
                     )
                     exec_report = ctx.executor.apply_general_mode(general_out, safety=safety)
+                    _log_mode(seq=seq, state=ctx.router.state, route_summary=route_decision.summary(), path="general")
+                    _log_general(seq=seq, stable_label=None, eligible_label=None, general_out=general_out)
+                    _log_safety(seq=seq, safety=safety)
+                    _log_exec(seq=seq, policy_status=ctx.executor.policy_status_text(), exec_report=exec_report)
                     cursor_preview = general_out.cursor.preview_point
                     cursor_preview_text = "CUR:None"
                     if cursor_preview is not None:
                         cursor_preview_text = f"CURPREV:{cursor_preview.x:.2f},{cursor_preview.y:.2f}"
                     extra = (
-                        f"No hand detected | CLT:{general_out.clutch.state.value} | "
+                        f"No hand detected | {_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
+                        f"{_format_general_controls(ctx)} | "
+                        f"CLT:{general_out.clutch.state.value} | "
                         f"SCR:{general_out.scroll.state.value}/{general_out.scroll.axis.value} | "
                         f"PRI:{general_out.primary.state.value} | "
                         f"SEC:{general_out.secondary.state.value} | "
-                        f"CUR:{general_out.cursor.state.value} | "
+                        f"{_format_cursor_runtime(general_out.cursor, exec_report.cursor)} | "
                         f"{cursor_preview_text} | "
                         f"{format_action_intent(general_out.intent)} | "
                         f"{_format_execution_policy_status(ctx, safety.summary(), route_summary=route_decision.summary())} | "
@@ -562,6 +712,7 @@ def run_loop(initial_state: AppState) -> None:
                     )
                     extra = (
                         f"No hand detected | "
+                        f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
                         f"{_format_presentation_context(presentation_context)} | "
                         f"{presentation_signal.status_text()} | "
                         f"{format_action_intent(presentation_out.intent)} | "
@@ -597,8 +748,9 @@ def run_loop(initial_state: AppState) -> None:
             state.last_extra = extra
 
             cv2.imshow(ctx.window_name, frame_out)
+            state.first_frame_presented = True
             key = cv2.waitKey(1) & 0xFF
-            request = _request_exit_from_key(ctx, key)
+            request = _consume_exit_request(ctx, state, key=key, now=time.monotonic())
             if request is not None:
                 _perform_exit(ctx, state, request, frame_disp=frame_out, base_extra=extra)
                 break

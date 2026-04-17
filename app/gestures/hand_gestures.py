@@ -81,22 +81,23 @@ class GestureCfg:
     open_palm_min_extended: int = 4
     open_palm_max_curled: int = 1
     open_palm_max_near_palm: int = 1
-    open_palm_min_adjacent_tip_x_ratio: float = 0.24
-    open_palm_min_avg_tip_x_ratio: float = 0.20
-    open_palm_min_cluster_ratio: float = 0.58
-    open_palm_thumb_index_min_ratio: float = 0.72
-    open_palm_thumb_min_tip_to_palm: float = 0.54
+    open_palm_min_adjacent_tip_x_ratio: float = 0.28
+    open_palm_min_avg_tip_x_ratio: float = 0.24
+    open_palm_min_cluster_ratio: float = 0.72
+    open_palm_min_tip_span_ratio: float = 1.18
+    open_palm_thumb_index_min_ratio: float = 0.84
+    open_palm_thumb_min_tip_to_palm: float = 0.60
 
     # Closed palm
     closed_palm_min_chain_count: int = 3
     closed_palm_max_parallel_angle_deg: float = 35.0
-    closed_palm_max_adjacent_tip_x_ratio: float = 0.34
-    closed_palm_max_avg_tip_x_ratio: float = 0.28
-    closed_palm_max_cluster_ratio: float = 0.95
-    closed_palm_min_compact_votes: int = 2
+    closed_palm_max_adjacent_tip_x_ratio: float = 0.39
+    closed_palm_max_avg_tip_x_ratio: float = 0.30
+    closed_palm_max_cluster_ratio: float = 0.90
+    closed_palm_max_tip_span_ratio: float = 0.90
     closed_palm_thumb_min_tip_to_palm: float = 0.30
-    closed_palm_thumb_max_tip_to_palm: float = 1.08
-    closed_palm_thumb_index_max_ratio: float = 1.28
+    closed_palm_thumb_max_tip_to_palm: float = 1.18
+    closed_palm_thumb_index_max_ratio: float = 1.32
 
     # Peace sign: two raised fingers with ring/pinky folded and a compact thumb.
     two_finger_folded_y_margin: float = 0.0
@@ -234,6 +235,10 @@ class HandGestures:
         cluster_height = max(sum(mcp_y) / len(mcp_y) - sum(tip_y) / len(tip_y), self.cfg.min_scale)
         return cluster_width / cluster_height
 
+    def _tip_span_ratio(self, lm, palm_width: float) -> float:
+        tip_x = [lm[INDEX_TIP].x, lm[MIDDLE_TIP].x, lm[RING_TIP].x, lm[PINKY_TIP].x]
+        return (max(tip_x) - min(tip_x)) / palm_width
+
     def _finger_folded_toward_palm(self, lm, tip: int, pip: int, mcp: int) -> bool:
         return (
             lm[tip].y > (lm[pip].y + self.cfg.two_finger_folded_y_margin)
@@ -291,32 +296,24 @@ class HandGestures:
             "tip_gap_ratio": self._d(lm[INDEX_TIP], lm[MIDDLE_TIP]) / palm_width,
         }
 
-    def _closed_palm_metrics(self, landmarks: Any) -> tuple[bool, int, list[float], float, float, float]:
+    def _closed_palm_metrics(self, landmarks: Any) -> tuple[bool, int, list[float], float, float, float, float]:
         lm = self._lm(landmarks)
         summary = summarize_hand_pose(lm, use_3d=self.cfg.use_3d, min_scale=self.cfg.min_scale)
         palm_width = self._palm_width(lm)
         adjacent_tip_x_ratios = self._adjacent_tip_x_ratios(lm, palm_width)
         avg_tip_x_ratio = sum(adjacent_tip_x_ratios) / len(adjacent_tip_x_ratios)
         cluster_ratio = self._tip_cluster_ratio(lm)
+        tip_span_ratio = self._tip_span_ratio(lm, palm_width)
         adjacent_finger_angles = self._adjacent_finger_angles(lm)
         thumb_to_index_ratio = self._d(lm[THUMB_TIP], lm[INDEX_MCP]) / palm_width
         chain_count = self._non_thumb_chain_count(lm)
-        compact_votes = sum(
-            1
-            for matched in (
-                max(adjacent_tip_x_ratios) < self.cfg.open_palm_min_adjacent_tip_x_ratio,
-                avg_tip_x_ratio < self.cfg.open_palm_min_avg_tip_x_ratio,
-                cluster_ratio < self.cfg.open_palm_min_cluster_ratio,
-            )
-            if matched
-        )
         passed = (
             chain_count >= self.cfg.closed_palm_min_chain_count
             and max(adjacent_finger_angles) <= self.cfg.closed_palm_max_parallel_angle_deg
             and max(adjacent_tip_x_ratios) <= self.cfg.closed_palm_max_adjacent_tip_x_ratio
             and avg_tip_x_ratio <= self.cfg.closed_palm_max_avg_tip_x_ratio
             and cluster_ratio <= self.cfg.closed_palm_max_cluster_ratio
-            and compact_votes >= self.cfg.closed_palm_min_compact_votes
+            and tip_span_ratio <= self.cfg.closed_palm_max_tip_span_ratio
             and self.cfg.closed_palm_thumb_min_tip_to_palm <= summary.thumb.tip_to_palm <= self.cfg.closed_palm_thumb_max_tip_to_palm
             and thumb_to_index_ratio <= self.cfg.closed_palm_thumb_index_max_ratio
         )
@@ -327,6 +324,7 @@ class HandGestures:
             max(adjacent_tip_x_ratios),
             avg_tip_x_ratio,
             cluster_ratio,
+            tip_span_ratio,
         )
 
     # -------- gestures --------
@@ -337,6 +335,7 @@ class HandGestures:
         adjacent_tip_x_ratios = self._adjacent_tip_x_ratios(lm, palm_width)
         avg_tip_x_ratio = sum(adjacent_tip_x_ratios) / len(adjacent_tip_x_ratios)
         cluster_ratio = self._tip_cluster_ratio(lm)
+        tip_span_ratio = self._tip_span_ratio(lm, palm_width)
         thumb_to_index_ratio = self._d(lm[THUMB_TIP], lm[INDEX_MCP]) / palm_width
 
         if summary.extended_count < self.cfg.open_palm_min_extended:
@@ -353,6 +352,8 @@ class HandGestures:
             return False
         if cluster_ratio < self.cfg.open_palm_min_cluster_ratio:
             return False
+        if tip_span_ratio < self.cfg.open_palm_min_tip_span_ratio:
+            return False
         if thumb_to_index_ratio < self.cfg.open_palm_thumb_index_min_ratio:
             return False
 
@@ -364,7 +365,7 @@ class HandGestures:
         return summary.thumb.tip_to_palm >= self.cfg.open_palm_thumb_min_tip_to_palm
 
     def detect_closed_palm(self, landmarks: Any) -> bool:
-        passed, _, _, _, _, _ = self._closed_palm_metrics(landmarks)
+        passed, _, _, _, _, _, _ = self._closed_palm_metrics(landmarks)
         return passed
 
     def detect_peace_sign(self, landmarks: Any) -> bool:

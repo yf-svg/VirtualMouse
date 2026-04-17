@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
+import shutil
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -12,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 try:
     import winsound
 except ImportError:  # pragma: no cover - non-Windows fallback
@@ -22,7 +25,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from app.config import CONFIG
-from app.gestures.features import assess_hand_input_quality, extract_feature_vector
+from app.gestures.classifier import SVMClassifier
+from app.gestures.features import assess_hand_input_quality, extract_feature_vector, get_landmarks
+from app.gestures.sets.labels import ALL_ALLOWED_LABELS, UNIFIED_LABEL_ORDER
+from app.gestures.suite import GestureSuite, GestureSuiteOut
 from app.perception.camera import Camera
 from app.perception.hand_tracker import HandTracker
 from app.perception.preprocessing import Preprocessor
@@ -32,6 +38,13 @@ from tools.check_collection_readiness import validate_collection_readiness
 SOUND_ASSET_DIR = ROOT / "assets" / "sounds"
 DEFAULT_PROTOCOL_PATH = ROOT / "docs" / "dataset_collection_protocol.md"
 DEFAULT_TRACKER_PATH = ROOT / "docs" / "dataset_collection_tracker.csv"
+RECORDER_VERSION = "phase4.recorder.v2"
+RECORDER_RULES_ONLY_MODEL_PATH = ROOT / "models" / "__recorder_rules_only__.joblib"
+LANDMARK_ARTIFACT_VERSION = "phase4.landmarks.v1"
+SNAPSHOT_ARTIFACT_VERSION = "phase4.snapshots.v1"
+DEFAULT_SNAPSHOT_MAX_EDGE = 256
+DEFAULT_SNAPSHOT_JPEG_QUALITY = 70
+DEFAULT_SNAPSHOT_PADDING_RATIO = 0.18
 
 
 class RecorderState(str, Enum):
@@ -46,6 +59,16 @@ class RecorderState(str, Enum):
 class CaptureMode(str, Enum):
     AUTO = "AUTO"
     MANUAL = "MANUAL"
+
+
+@dataclass(frozen=True)
+class RecorderGuidance:
+    chosen: str | None
+    stable: str | None
+    eligible: str | None
+    source: str
+    gate_reason: str
+    capture_ready: bool
 
 
 def _slugify(value: str) -> str:
@@ -125,6 +148,14 @@ class RecorderConfig:
     countdown_seconds: float = 3.0
     sound_enabled: bool = True
     mirror_view: bool = True
+    overwrite_output: bool = False
+    require_label_match: bool = True
+    tracker_sync_enabled: bool = True
+    save_raw_landmarks: bool = True
+    save_snapshots: bool = False
+    snapshot_max_edge: int = DEFAULT_SNAPSHOT_MAX_EDGE
+    snapshot_jpeg_quality: int = DEFAULT_SNAPSHOT_JPEG_QUALITY
+    snapshot_padding_ratio: float = DEFAULT_SNAPSHOT_PADDING_RATIO
     detect_scale: float = CONFIG.detect_scale
     enable_preprocessing: bool = CONFIG.enable_preprocessing
 
@@ -145,6 +176,13 @@ class RecordingSample:
     quality_bbox_width: float
     quality_bbox_height: float
     feature_values: list[float]
+    guide_chosen: str | None = None
+    guide_stable: str | None = None
+    guide_eligible: str | None = None
+    guide_source: str | None = None
+    guide_gate_reason: str | None = None
+    raw_landmark_index: int | None = None
+    snapshot_relpath: str | None = None
 
 
 @dataclass
@@ -156,6 +194,8 @@ class RecordingSession:
     feature_dimension: int
     capture_context: dict[str, str]
     created_at: str
+    recorder_version: str = RECORDER_VERSION
+    artifacts: dict[str, Any] = field(default_factory=dict)
     samples: list[RecordingSample] = field(default_factory=list)
 
 
@@ -171,6 +211,13 @@ class RecorderRuntime:
     started_at_monotonic: float = 0.0
     countdown_started_at: float | None = None
     countdown_last_whole_second: int | None = None
+    label_rejections: int = 0
+
+
+@dataclass
+class RecorderArtifacts:
+    raw_landmarks: list[np.ndarray] = field(default_factory=list)
+    snapshot_blobs: dict[int, bytes] = field(default_factory=dict)
 
 
 def build_output_path(
@@ -185,8 +232,90 @@ def build_output_path(
     return root / filename
 
 
+def _validate_gesture_label(gesture_label: str) -> str:
+    normalized = str(gesture_label).strip().upper()
+    if normalized not in ALL_ALLOWED_LABELS:
+        allowed = ", ".join(UNIFIED_LABEL_ORDER)
+        raise SystemExit(
+            f"[Recorder] Unknown gesture label {gesture_label!r}. "
+            f"Use one of: {allowed}"
+        )
+    return normalized
+
+
+def _ensure_output_path_available(output_path: Path, *, overwrite: bool) -> None:
+    if output_path.exists() and not overwrite:
+        raise SystemExit(
+            f"[Recorder] Refusing to overwrite existing file: {output_path}\n"
+            "Use --overwrite or choose a new --session-id/--output path."
+        )
+
+
+def _build_recorder_suite() -> GestureSuite:
+    classifier = SVMClassifier(
+        model_path=RECORDER_RULES_ONLY_MODEL_PATH,
+        allowed=ALL_ALLOWED_LABELS,
+    )
+    return GestureSuite(
+        classifier=classifier,
+        allowed=ALL_ALLOWED_LABELS,
+        priority=UNIFIED_LABEL_ORDER,
+        allow_priority=True,
+    )
+
+
+def _build_recorder_guidance(
+    *,
+    target_label: str,
+    suite_out: GestureSuiteOut | None,
+    require_label_match: bool,
+) -> RecorderGuidance:
+    if suite_out is None:
+        return RecorderGuidance(
+            chosen=None,
+            stable=None,
+            eligible=None,
+            source="none",
+            gate_reason="label_no_match",
+            capture_ready=not require_label_match,
+        )
+
+    if not require_label_match:
+        return RecorderGuidance(
+            chosen=suite_out.chosen,
+            stable=suite_out.stable,
+            eligible=suite_out.eligible,
+            source=suite_out.source,
+            gate_reason="label_guard_disabled",
+            capture_ready=True,
+        )
+
+    if suite_out.eligible == target_label:
+        gate_reason = "ok"
+        capture_ready = True
+    elif suite_out.stable == target_label:
+        gate_reason = f"label_hold_pending:{target_label}"
+        capture_ready = False
+    elif suite_out.chosen == target_label:
+        gate_reason = f"label_switch_pending:{target_label}"
+        capture_ready = False
+    else:
+        observed = suite_out.stable or suite_out.chosen or suite_out.eligible or "NONE"
+        gate_reason = f"label_mismatch:{observed}"
+        capture_ready = False
+
+    return RecorderGuidance(
+        chosen=suite_out.chosen,
+        stable=suite_out.stable,
+        eligible=suite_out.eligible,
+        source=suite_out.source,
+        gate_reason=gate_reason,
+        capture_ready=capture_ready,
+    )
+
+
 def session_to_payload(session: RecordingSession) -> dict[str, Any]:
-    return {
+    payload = {
         "gesture_label": session.gesture_label,
         "user_id": session.user_id,
         "session_id": session.session_id,
@@ -194,13 +323,150 @@ def session_to_payload(session: RecordingSession) -> dict[str, Any]:
         "feature_dimension": session.feature_dimension,
         "capture_context": dict(session.capture_context),
         "created_at": session.created_at,
+        "recorder_version": session.recorder_version,
         "sample_count": len(session.samples),
         "samples": [asdict(sample) for sample in session.samples],
     }
+    if session.artifacts:
+        payload["artifacts"] = dict(session.artifacts)
+    return payload
 
 
-def save_session(session: RecordingSession, output_path: Path) -> Path:
+def _landmark_sidecar_path(output_path: Path) -> Path:
+    return output_path.with_suffix(".landmarks.npz")
+
+
+def _snapshot_dir(output_path: Path) -> Path:
+    return output_path.parent / f"{output_path.stem}__snapshots"
+
+
+def _snapshot_relpath(sample_index: int) -> str:
+    return f"{sample_index:04d}.jpg"
+
+
+def _extract_raw_landmark_array(landmarks: Any) -> np.ndarray:
+    lm = get_landmarks(landmarks)
+    matrix = np.asarray(
+        [
+            [float(point.x), float(point.y), float(getattr(point, "z", 0.0))]
+            for point in lm
+        ],
+        dtype=np.float16,
+    )
+    if matrix.shape != (21, 3):
+        raise ValueError(f"Expected 21x3 landmarks, got {matrix.shape!r}")
+    return matrix
+
+
+def _encode_snapshot_crop(
+    frame_bgr,
+    landmarks: Any,
+    *,
+    max_edge: int,
+    jpeg_quality: int,
+    padding_ratio: float,
+) -> bytes:
+    lm = get_landmarks(landmarks)
+    h, w = frame_bgr.shape[:2]
+    xs = [float(point.x) for point in lm]
+    ys = [float(point.y) for point in lm]
+    min_x = max(0.0, min(xs))
+    max_x = min(1.0, max(xs))
+    min_y = max(0.0, min(ys))
+    max_y = min(1.0, max(ys))
+    bbox_w = max_x - min_x
+    bbox_h = max_y - min_y
+    pad = max(bbox_w, bbox_h) * max(0.0, padding_ratio)
+
+    x0 = max(0, int(np.floor((min_x - pad) * w)))
+    y0 = max(0, int(np.floor((min_y - pad) * h)))
+    x1 = min(w, int(np.ceil((max_x + pad) * w)))
+    y1 = min(h, int(np.ceil((max_y + pad) * h)))
+    if x1 <= x0 or y1 <= y0:
+        raise ValueError("Snapshot crop resolved to an empty region.")
+
+    crop = frame_bgr[y0:y1, x0:x1]
+    longest_edge = max(crop.shape[:2])
+    if longest_edge > max_edge:
+        scale = float(max_edge) / float(longest_edge)
+        crop = cv2.resize(
+            crop,
+            (max(1, int(round(crop.shape[1] * scale))), max(1, int(round(crop.shape[0] * scale)))),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    ok, encoded = cv2.imencode(
+        ".jpg",
+        crop,
+        [int(cv2.IMWRITE_JPEG_QUALITY), int(jpeg_quality)],
+    )
+    if not ok:
+        raise ValueError("OpenCV failed to encode snapshot crop.")
+    return encoded.tobytes()
+
+
+def _persist_artifacts(
+    *,
+    session: RecordingSession,
+    output_path: Path,
+    cfg: RecorderConfig,
+    artifacts: RecorderArtifacts,
+) -> None:
+    manifest: dict[str, Any] = {}
+    landmark_path = _landmark_sidecar_path(output_path)
+    if cfg.overwrite_output and landmark_path.exists():
+        landmark_path.unlink()
+    if cfg.save_raw_landmarks and artifacts.raw_landmarks:
+        landmark_stack = np.stack(artifacts.raw_landmarks, axis=0).astype(np.float16, copy=False)
+        np.savez_compressed(landmark_path, landmarks=landmark_stack)
+        manifest["raw_landmarks"] = {
+            "version": LANDMARK_ARTIFACT_VERSION,
+            "path": landmark_path.name,
+            "format": "npz",
+            "dtype": "float16",
+            "shape": [int(v) for v in landmark_stack.shape],
+            "coordinate_space": "mediapipe_normalized_xyz",
+            "sample_field": "raw_landmark_index",
+        }
+
+    snapshot_dir = _snapshot_dir(output_path)
+    if cfg.overwrite_output and snapshot_dir.exists():
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+    if cfg.save_snapshots and artifacts.snapshot_blobs:
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        for sample_index, blob in sorted(artifacts.snapshot_blobs.items()):
+            (snapshot_dir / _snapshot_relpath(sample_index)).write_bytes(blob)
+        manifest["snapshots"] = {
+            "version": SNAPSHOT_ARTIFACT_VERSION,
+            "directory": snapshot_dir.name,
+            "format": "jpg",
+            "kind": "accepted_hand_crop",
+            "count": len(artifacts.snapshot_blobs),
+            "max_edge": int(cfg.snapshot_max_edge),
+            "jpeg_quality": int(cfg.snapshot_jpeg_quality),
+            "padding_ratio": float(cfg.snapshot_padding_ratio),
+            "mirrored": False,
+            "sample_field": "snapshot_relpath",
+        }
+
+    session.artifacts = manifest
+
+
+def save_session(
+    session: RecordingSession,
+    output_path: Path,
+    *,
+    cfg: RecorderConfig | None = None,
+    artifacts: RecorderArtifacts | None = None,
+) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if cfg is not None and artifacts is not None:
+        _persist_artifacts(
+            session=session,
+            output_path=output_path,
+            cfg=cfg,
+            artifacts=artifacts,
+        )
     payload = session_to_payload(session)
     output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return output_path
@@ -222,6 +488,20 @@ def _draw_text(frame_bgr, text: str, xy: tuple[int, int], scale: float = 0.6) ->
 def _humanize_quality_reason(quality_reason: str, quality_ok: bool) -> str:
     if quality_ok:
         return "Ready to capture"
+
+    if quality_reason == "label_guard_disabled":
+        return "Ready to capture"
+    if quality_reason == "label_no_match":
+        return "Target gesture not recognized yet"
+    if quality_reason.startswith("label_hold_pending:"):
+        target = quality_reason.split(":", 1)[1]
+        return f"Hold {target} steady until confirmed"
+    if quality_reason.startswith("label_switch_pending:"):
+        target = quality_reason.split(":", 1)[1]
+        return f"Keep {target} steady; confirmation pending"
+    if quality_reason.startswith("label_mismatch:"):
+        observed = quality_reason.split(":", 1)[1]
+        return f"Target mismatch: saw {observed}"
 
     return {
         "no_hand": "No hand detected",
@@ -358,6 +638,13 @@ def _build_session_summary(
         f"Session: {session.session_id}",
         f"Accepted: {len(session.samples)}",
         f"Rejected: {runtime.rejected_attempts}",
+        (
+            f"Acceptance: {len(session.samples)}/{len(session.samples) + runtime.rejected_attempts} "
+            f"({(100.0 * len(session.samples) / (len(session.samples) + runtime.rejected_attempts)):.1f}%)"
+            if (len(session.samples) + runtime.rejected_attempts) > 0
+            else "Acceptance: n/a"
+        ),
+        f"Label rejects: {runtime.label_rejections}",
         f"Duration: {duration}",
         f"Handedness: {_handedness_summary(session)}",
     ]
@@ -377,11 +664,19 @@ def _draw_overlay(
     quality_reason: str,
     quality_ok: bool,
     handedness: str | None,
+    guidance: RecorderGuidance | None,
 ) -> None:
     now = time.perf_counter()
     h, w = frame_bgr.shape[:2]
-    cv2.rectangle(frame_bgr, (8, 8), (min(w - 8, 610), 220), (18, 18, 18), -1)
-    cv2.rectangle(frame_bgr, (8, 8), (min(w - 8, 610), 220), (70, 70, 70), 1)
+    cv2.rectangle(frame_bgr, (8, 8), (min(w - 8, 610), 270), (18, 18, 18), -1)
+    cv2.rectangle(frame_bgr, (8, 8), (min(w - 8, 610), 270), (70, 70, 70), 1)
+
+    guide_text = "Guide: target not checked"
+    if guidance is not None:
+        guide_text = (
+            f"Guide: tgt={cfg.gesture_label} chosen={guidance.chosen or 'NONE'} "
+            f"stable={guidance.stable or 'NONE'} eligible={guidance.eligible or 'NONE'}"
+        )
 
     lines = [
         (f"Label: {cfg.gesture_label}", 0.7),
@@ -389,8 +684,10 @@ def _draw_overlay(
         (f"Session: {cfg.session_id}", 0.58),
         (f"State: {_state_text(runtime.state)} | Mode: {runtime.capture_mode.value}", 0.58),
         (f"Accepted: {runtime.accepted_samples} | Rejected: {runtime.rejected_attempts}", 0.58),
+        (f"Label rejects: {runtime.label_rejections}", 0.58),
         (f"Progress: {_progress_text(runtime.accepted_samples, cfg.max_samples)}", 0.58),
         (f"Handedness: {handedness or 'Unknown'}", 0.58),
+        (guide_text, 0.54),
         (f"Gate: {_humanize_quality_reason(quality_reason, quality_ok)}", 0.58),
         (f"Last result: {runtime.last_result}", 0.58),
     ]
@@ -407,7 +704,7 @@ def _draw_overlay(
         _draw_text(frame_bgr, "Record one gesture label per session.", (18, 276), 0.54)
         _draw_text(frame_bgr, "Press M to switch between AUTO and MANUAL capture.", (18, 298), 0.54)
         _draw_text(frame_bgr, "AUTO uses interval capture. MANUAL arms with SPACE and captures on C.", (18, 320), 0.54)
-        _draw_text(frame_bgr, "Only record one gesture label per session.", (18, 342), 0.54)
+        _draw_text(frame_bgr, "Capture now also waits for the target label to be confirmed.", (18, 342), 0.54)
 
     footer = "M mode | SPACE start/pause | C capture once | U undo | X discard | Q/Esc save+quit"
     _draw_text(frame_bgr, footer, (10, h - 15), 0.55)
@@ -447,6 +744,9 @@ def _build_sample(
     feature_values: tuple[float, ...],
     schema_version: str,
     quality,
+    guidance: RecorderGuidance | None,
+    raw_landmark_index: int | None,
+    snapshot_relpath: str | None,
 ) -> RecordingSample:
     return RecordingSample(
         sample_index=sample_index,
@@ -463,6 +763,13 @@ def _build_sample(
         quality_bbox_width=quality.bbox_width,
         quality_bbox_height=quality.bbox_height,
         feature_values=[float(v) for v in feature_values],
+        guide_chosen=None if guidance is None else guidance.chosen,
+        guide_stable=None if guidance is None else guidance.stable,
+        guide_eligible=None if guidance is None else guidance.eligible,
+        guide_source=None if guidance is None else guidance.source,
+        guide_gate_reason=None if guidance is None else guidance.gate_reason,
+        raw_landmark_index=raw_landmark_index,
+        snapshot_relpath=snapshot_relpath,
     )
 
 
@@ -470,25 +777,70 @@ def _capture_sample(
     *,
     frame_seq: int,
     cfg: RecorderConfig,
+    frame_bgr,
     detected_hand,
     session: RecordingSession,
+    artifacts: RecorderArtifacts,
+    guidance: RecorderGuidance | None,
 ) -> RecordingSample:
     quality = assess_hand_input_quality(detected_hand.landmarks)
     if not quality.passed:
         raise ValueError(f"Cannot capture sample from rejected hand input: {quality.reason}")
 
+    sample_index = len(session.samples)
     feature_vector = extract_feature_vector(detected_hand.landmarks)
+    raw_landmark_values = (
+        _extract_raw_landmark_array(detected_hand.landmarks)
+        if cfg.save_raw_landmarks
+        else None
+    )
+    snapshot_blob = (
+        _encode_snapshot_crop(
+            frame_bgr,
+            detected_hand.landmarks,
+            max_edge=cfg.snapshot_max_edge,
+            jpeg_quality=cfg.snapshot_jpeg_quality,
+            padding_ratio=cfg.snapshot_padding_ratio,
+        )
+        if cfg.save_snapshots
+        else None
+    )
     sample = _build_sample(
-        sample_index=len(session.samples),
+        sample_index=sample_index,
         frame_seq=frame_seq,
         cfg=cfg,
         handedness=detected_hand.handedness,
         feature_values=feature_vector.values,
         schema_version=feature_vector.schema_version,
         quality=quality,
+        guidance=guidance,
+        raw_landmark_index=sample_index if raw_landmark_values is not None else None,
+        snapshot_relpath=_snapshot_relpath(sample_index) if snapshot_blob is not None else None,
     )
     session.samples.append(sample)
+    if raw_landmark_values is not None:
+        artifacts.raw_landmarks.append(raw_landmark_values)
+    if snapshot_blob is not None:
+        artifacts.snapshot_blobs[sample_index] = snapshot_blob
     return sample
+
+
+def _undo_last_sample(session: RecordingSession, artifacts: RecorderArtifacts) -> RecordingSample | None:
+    if not session.samples:
+        return None
+    removed = session.samples.pop()
+    if removed.raw_landmark_index is not None and artifacts.raw_landmarks:
+        artifacts.raw_landmarks.pop()
+    if removed.snapshot_relpath is not None:
+        artifacts.snapshot_blobs.pop(removed.sample_index, None)
+    return removed
+
+
+def _discard_session(session: RecordingSession, artifacts: RecorderArtifacts) -> None:
+    session.samples.clear()
+    session.artifacts.clear()
+    artifacts.raw_landmarks.clear()
+    artifacts.snapshot_blobs.clear()
 
 
 def _set_last_result(runtime: RecorderRuntime, message: str, *, level: str = "info") -> None:
@@ -514,6 +866,8 @@ def _toggle_capture_mode(runtime: RecorderRuntime) -> CaptureMode:
 
 def _record_rejection(runtime: RecorderRuntime, quality_reason: str, *, sound_enabled: bool = False) -> None:
     runtime.rejected_attempts += 1
+    if str(quality_reason).startswith("label_"):
+        runtime.label_rejections += 1
     _set_last_result(runtime, f"Rejected: {_humanize_quality_reason(quality_reason, False)}", level="reject")
     _play_sound("reject", enabled=sound_enabled)
 
@@ -551,6 +905,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mute-sounds", action="store_true", help="Disable recorder beep and system sound cues.")
     parser.add_argument("--skip-readiness-check", action="store_true", help="Skip the automatic dataset readiness preflight even when scope and round are provided.")
     parser.add_argument("--output", type=Path, default=None, help="Optional output path for the saved JSON session.")
+    parser.add_argument("--overwrite", action="store_true", help="Allow overwriting an existing output file.")
+    parser.add_argument("--allow-label-mismatch", action="store_true", help="Disable the target-label confirmation guard and capture any quality-approved hand pose.")
+    parser.add_argument("--no-tracker-sync", action="store_true", help="Do not auto-update the dataset tracker row on save/discard.")
+    parser.add_argument("--no-raw-landmarks", action="store_true", help="Do not save the compact raw-landmark sidecar. Default is on because it is tiny and future-proofs the dataset.")
+    parser.add_argument("--save-snapshots", action="store_true", help="Save optional accepted-sample hand crops as low-resolution JPEG sidecars.")
+    parser.add_argument("--snapshot-max-edge", type=int, default=DEFAULT_SNAPSHOT_MAX_EDGE, help="Maximum edge length for optional accepted-sample hand-crop snapshots.")
+    parser.add_argument("--snapshot-jpeg-quality", type=int, default=DEFAULT_SNAPSHOT_JPEG_QUALITY, help="JPEG quality for optional accepted-sample hand-crop snapshots.")
     return parser
 
 
@@ -566,6 +927,81 @@ def _make_session(cfg: RecorderConfig) -> RecordingSession:
     )
 
 
+def _tracker_row_key(cfg: RecorderConfig) -> tuple[str, str, str, str, str, str] | None:
+    context = cfg.capture_context
+    values = (
+        context.get("round"),
+        context.get("scope"),
+        cfg.user_id,
+        context.get("background"),
+        context.get("lighting"),
+        cfg.gesture_label,
+    )
+    if any(not value for value in values):
+        return None
+    return tuple(str(value) for value in values)
+
+
+def _sync_tracker_row(
+    *,
+    cfg: RecorderConfig,
+    session: RecordingSession,
+    runtime: RecorderRuntime,
+    discarded: bool,
+    saved: bool,
+    tracker_path: Path = DEFAULT_TRACKER_PATH,
+) -> str:
+    if not cfg.tracker_sync_enabled:
+        return "disabled"
+    row_key = _tracker_row_key(cfg)
+    if row_key is None:
+        return "skipped_missing_context"
+    if not tracker_path.exists():
+        return "skipped_missing_tracker"
+
+    with tracker_path.open("r", encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = list(reader)
+        fieldnames = list(reader.fieldnames or [])
+
+    updated = False
+    for row in rows:
+        current_key = (
+            row.get("round", ""),
+            row.get("scope", ""),
+            row.get("user_id", ""),
+            row.get("background", ""),
+            row.get("lighting", ""),
+            row.get("gesture_label", ""),
+        )
+        if current_key != row_key:
+            continue
+        row["accepted_samples"] = str(len(session.samples))
+        row["rejected_attempts"] = str(runtime.rejected_attempts)
+        if saved:
+            row["status"] = "completed"
+            row["file_path"] = str(cfg.output_path)
+        elif discarded:
+            row["status"] = "discarded"
+            row["file_path"] = ""
+        else:
+            row["status"] = "redo" if len(session.samples) > 0 else "not_started"
+            row["file_path"] = ""
+        notes = [token for token in [row.get("notes", "").strip(), f"session_id={cfg.session_id}"] if token]
+        row["notes"] = " | ".join(dict.fromkeys(notes))
+        updated = True
+        break
+
+    if not updated:
+        return "skipped_no_matching_row"
+
+    with tracker_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return "updated"
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     capture_context = parse_capture_context(args.capture_context)
@@ -573,9 +1009,11 @@ def main() -> None:
         capture_context=capture_context,
         skip_check=args.skip_readiness_check,
     )
-    output_path = args.output or build_output_path(args.gesture_label, args.user_id, args.session_id)
+    gesture_label = _validate_gesture_label(args.gesture_label)
+    output_path = args.output or build_output_path(gesture_label, args.user_id, args.session_id)
+    _ensure_output_path_available(output_path, overwrite=bool(args.overwrite))
     cfg = RecorderConfig(
-        gesture_label=args.gesture_label,
+        gesture_label=gesture_label,
         user_id=args.user_id,
         session_id=args.session_id,
         output_path=output_path,
@@ -585,6 +1023,13 @@ def main() -> None:
         countdown_seconds=max(0.0, float(args.countdown_seconds)),
         sound_enabled=not args.mute_sounds,
         mirror_view=CONFIG.mirror_view,
+        overwrite_output=bool(args.overwrite),
+        require_label_match=not bool(args.allow_label_mismatch),
+        tracker_sync_enabled=not bool(args.no_tracker_sync),
+        save_raw_landmarks=not bool(args.no_raw_landmarks),
+        save_snapshots=bool(args.save_snapshots),
+        snapshot_max_edge=max(96, int(args.snapshot_max_edge)),
+        snapshot_jpeg_quality=max(30, min(95, int(args.snapshot_jpeg_quality))),
         detect_scale=CONFIG.detect_scale,
         enable_preprocessing=CONFIG.enable_preprocessing,
     )
@@ -592,12 +1037,14 @@ def main() -> None:
     session = _make_session(cfg)
     camera = Camera(device_index=CONFIG.camera_index, width=CONFIG.cam_width, height=CONFIG.cam_height)
     tracker = HandTracker(max_num_hands=1)
+    recorder_suite = _build_recorder_suite()
     preprocessor = Preprocessor(enable=cfg.enable_preprocessing)
     camera_thread: ThreadedCamera | None = None
     discarded = False
     save_requested = False
     last_capture_t = 0.0
     window_name = f"{CONFIG.app_name} - Record {cfg.gesture_label}"
+    artifacts = RecorderArtifacts()
     runtime = RecorderRuntime(
         state=RecorderState.STARTUP_HELP,
         capture_mode=CaptureMode.AUTO,
@@ -638,6 +1085,12 @@ def main() -> None:
                 small = preprocessor.apply(small)
 
             detected_hand = tracker.detect(small)
+            suite_out = recorder_suite.detect(detected_hand)
+            guidance = _build_recorder_guidance(
+                target_label=cfg.gesture_label,
+                suite_out=suite_out,
+                require_label_match=cfg.require_label_match,
+            )
             quality_reason = "no_hand"
             quality_ok = False
             handedness = None
@@ -649,17 +1102,23 @@ def main() -> None:
                 draw_landmarks = _mirror_landmarks(detected_hand.landmarks) if cfg.mirror_view else detected_hand.landmarks
                 tracker.draw(frame_disp, draw_landmarks)
 
+                capture_gate_ok = quality_ok and guidance.capture_ready
+                capture_gate_reason = "ok" if capture_gate_ok else (quality_reason if not quality_ok else guidance.gate_reason)
+
                 should_auto_capture = (
                     runtime.state == RecorderState.RECORDING_AUTO
-                    and quality_ok
+                    and capture_gate_ok
                     and (now - last_capture_t) >= cfg.sample_interval_s
                 )
                 if should_auto_capture:
                     sample = _capture_sample(
                         frame_seq=frame_seq,
                         cfg=cfg,
+                        frame_bgr=frame_raw,
                         detected_hand=detected_hand,
                         session=session,
+                        artifacts=artifacts,
+                        guidance=guidance,
                     )
                     runtime.accepted_samples = len(session.samples)
                     _set_last_result(runtime, f"Accepted sample #{sample.sample_index}", level="accept")
@@ -669,18 +1128,25 @@ def main() -> None:
                         _set_last_result(runtime, f"Target reached for {cfg.gesture_label}", level="accept")
                         _update_state(runtime, RecorderState.PAUSED)
                         _play_sound("target_reached", enabled=cfg.sound_enabled)
-                elif runtime.state == RecorderState.RECORDING_AUTO and not quality_ok and (now - last_capture_t) >= cfg.sample_interval_s:
-                    _record_rejection(runtime, quality_reason, sound_enabled=cfg.sound_enabled)
+                elif runtime.state == RecorderState.RECORDING_AUTO and not capture_gate_ok and (now - last_capture_t) >= cfg.sample_interval_s:
+                    _record_rejection(runtime, capture_gate_reason, sound_enabled=cfg.sound_enabled)
                     last_capture_t = now
+            else:
+                guidance = _build_recorder_guidance(
+                    target_label=cfg.gesture_label,
+                    suite_out=suite_out,
+                    require_label_match=cfg.require_label_match,
+                )
 
             _draw_overlay(
                 frame_disp,
                 cfg=cfg,
                 session=session,
                 runtime=runtime,
-                quality_reason=quality_reason,
-                quality_ok=quality_ok,
+                quality_reason=quality_reason if not quality_ok else guidance.gate_reason,
+                quality_ok=quality_ok and guidance.capture_ready,
                 handedness=handedness,
+                guidance=guidance,
             )
             cv2.imshow(window_name, frame_disp)
 
@@ -697,7 +1163,7 @@ def main() -> None:
                     continue
                 if key in (ord("d"), ord("D")):
                     discarded = True
-                    session.samples.clear()
+                    _discard_session(session, artifacts)
                     runtime.accepted_samples = 0
                     _set_last_result(runtime, "Session discarded", level="info")
                     _play_sound("discard", enabled=cfg.sound_enabled)
@@ -748,27 +1214,33 @@ def main() -> None:
                     _record_rejection(runtime, "no_hand", sound_enabled=cfg.sound_enabled)
                 elif not quality_ok:
                     _record_rejection(runtime, quality_reason, sound_enabled=cfg.sound_enabled)
+                elif not guidance.capture_ready:
+                    _record_rejection(runtime, guidance.gate_reason, sound_enabled=cfg.sound_enabled)
                 else:
                     sample = _capture_sample(
                         frame_seq=frame_seq,
                         cfg=cfg,
+                        frame_bgr=frame_raw,
                         detected_hand=detected_hand,
                         session=session,
+                        artifacts=artifacts,
+                        guidance=guidance,
                     )
                     runtime.accepted_samples = len(session.samples)
                     _set_last_result(runtime, f"Accepted sample #{sample.sample_index}", level="accept")
                     last_capture_t = time.perf_counter()
                     print(f"[Recorder] Captured sample #{len(session.samples) - 1}")
             elif key in (ord("u"), ord("U")) and session.samples:
-                removed = session.samples.pop()
-                runtime.accepted_samples = len(session.samples)
-                _set_last_result(runtime, f"Removed sample #{removed.sample_index}", level="info")
-                print(f"[Recorder] Removed sample #{removed.sample_index}")
+                removed = _undo_last_sample(session, artifacts)
+                if removed is not None:
+                    runtime.accepted_samples = len(session.samples)
+                    _set_last_result(runtime, f"Removed sample #{removed.sample_index}", level="info")
+                    print(f"[Recorder] Removed sample #{removed.sample_index}")
             elif key in (ord("u"), ord("U")):
                 _set_last_result(runtime, "Nothing to undo", level="info")
             elif key in (ord("x"), ord("X")):
                 discarded = True
-                session.samples.clear()
+                _discard_session(session, artifacts)
                 runtime.accepted_samples = 0
                 _set_last_result(runtime, "Session discarded", level="info")
                 _play_sound("discard", enabled=cfg.sound_enabled)
@@ -786,19 +1258,51 @@ def main() -> None:
         cv2.destroyAllWindows()
 
     if discarded:
+        sync_status = _sync_tracker_row(
+            cfg=cfg,
+            session=session,
+            runtime=runtime,
+            discarded=True,
+            saved=False,
+        )
+        print(f"[Recorder] Tracker sync: {sync_status}")
         return
 
     if not save_requested:
+        sync_status = _sync_tracker_row(
+            cfg=cfg,
+            session=session,
+            runtime=runtime,
+            discarded=False,
+            saved=False,
+        )
+        print(f"[Recorder] Tracker sync: {sync_status}")
         print("[Recorder] Session closed without saving.")
         return
 
     if not session.samples:
+        sync_status = _sync_tracker_row(
+            cfg=cfg,
+            session=session,
+            runtime=runtime,
+            discarded=True,
+            saved=False,
+        )
+        print(f"[Recorder] Tracker sync: {sync_status}")
         _play_sound("discard", enabled=cfg.sound_enabled)
         print("[Recorder] No samples captured. Nothing saved.")
         return
 
-    save_session(session, cfg.output_path)
+    save_session(session, cfg.output_path, cfg=cfg, artifacts=artifacts)
+    sync_status = _sync_tracker_row(
+        cfg=cfg,
+        session=session,
+        runtime=runtime,
+        discarded=False,
+        saved=True,
+    )
     _play_sound("save", enabled=cfg.sound_enabled)
+    print(f"[Recorder] Tracker sync: {sync_status}")
     print(f"[Recorder] Saved {len(session.samples)} samples to {cfg.output_path}")
 
 

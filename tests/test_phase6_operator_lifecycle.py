@@ -52,6 +52,29 @@ def _suite_out(*, down: str | None, hold_frames: int = 2) -> _SuiteOut:
     )
 
 
+def _general_out(*, scroll_owns: bool = False, primary_owns: bool = False, secondary_owns: bool = False, clutch_owns: bool = False):
+    def _component(owns_state: bool, action_name: str = "NO_ACTION"):
+        return type(
+            "Component",
+            (),
+            {
+                "owns_state": owns_state,
+                "intent": type("Intent", (), {"action_name": action_name})(),
+            },
+        )()
+
+    return type(
+        "GeneralOut",
+        (),
+        {
+            "clutch": _component(clutch_owns),
+            "scroll": _component(scroll_owns, "SCROLL_VERTICAL" if scroll_owns else "NO_ACTION"),
+            "primary": _component(primary_owns, "PRIMARY_DRAG_HOLD" if primary_owns else "NO_ACTION"),
+            "secondary": _component(secondary_owns, "SECONDARY_RIGHT_CLICK" if secondary_owns else "NO_ACTION"),
+        },
+    )()
+
+
 class _ResetSpy:
     def __init__(self):
         self.calls = 0
@@ -91,15 +114,47 @@ class Phase6OperatorLifecycleTests(unittest.TestCase):
         request = controller.request_from_suite_out(
             suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
             router_state=AppState.ACTIVE_GENERAL,
+            general_out=_general_out(),
         )
 
         self.assertIsNotNone(request)
         self.assertEqual(request.source, "gesture")
         self.assertEqual(request.trigger, "THUMBS_DOWN")
+        self.assertEqual(request.effect, "exit_app")
+        presentation_request = controller.request_from_suite_out(
+            suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
+            router_state=AppState.ACTIVE_PRESENTATION,
+        )
+        self.assertIsNotNone(presentation_request)
+        self.assertEqual(presentation_request.effect, "exit_presentation")
         self.assertIsNone(
             controller.request_from_suite_out(
                 suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
                 router_state=AppState.AUTHENTICATING,
+            )
+        )
+
+    def test_general_gesture_exit_is_suppressed_while_scroll_or_other_owners_are_active(self):
+        controller = OperatorLifecycleController(
+            cfg=OperatorLifecycleConfig(
+                enable_gesture_exit=True,
+                gesture_exit_label="THUMBS_DOWN",
+                gesture_exit_min_hold_frames=2,
+            )
+        )
+
+        self.assertIsNone(
+            controller.request_from_suite_out(
+                suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
+                router_state=AppState.ACTIVE_GENERAL,
+                general_out=_general_out(scroll_owns=True),
+            )
+        )
+        self.assertIsNone(
+            controller.request_from_suite_out(
+                suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
+                router_state=AppState.ACTIVE_GENERAL,
+                general_out=_general_out(primary_owns=True),
             )
         )
 
@@ -176,6 +231,63 @@ class Phase6OperatorLifecycleTests(unittest.TestCase):
         self.assertEqual(policy.effective_execution.profile, "live")
         self.assertFalse(executor.policy.live_master_enabled)
         self.assertEqual(executor.policy.reason, "live_profile_missing_master_enable")
+
+    def test_override_policy_cursor_test_enables_only_live_cursor(self):
+        policy = resolve_operator_override_policy(
+            override_cfg=OperatorOverrideConfig(execution_override="cursor_test"),
+            execution_cfg=ExecutionConfig(profile="dry_run"),
+        )
+        executor = OSActionExecutor(
+            cfg=policy.effective_execution,
+            mouse_backend=NoOpMouseBackend(),
+            keyboard_backend=NoOpKeyboardBackend(),
+        )
+
+        self.assertTrue(policy.valid)
+        self.assertEqual(policy.effective_execution.profile, "live")
+        self.assertTrue(policy.effective_execution.enable_live_os)
+        self.assertTrue(policy.effective_execution.enable_live_cursor)
+        self.assertFalse(policy.effective_execution.enable_live_primary)
+        self.assertFalse(policy.effective_execution.enable_live_secondary)
+        self.assertFalse(policy.effective_execution.enable_live_scroll)
+        self.assertFalse(policy.effective_execution.enable_live_presentation)
+        self.assertTrue(executor.policy.live_master_enabled)
+        self.assertTrue(executor.policy.cursor_enabled)
+        self.assertFalse(executor.policy.primary_enabled)
+        self.assertEqual(executor.policy.status_text(), "LIVE:cur")
+
+    def test_override_policy_fallback_live_enables_full_rule_runtime(self):
+        policy = resolve_operator_override_policy(
+            override_cfg=OperatorOverrideConfig(execution_override="fallback_live"),
+            execution_cfg=ExecutionConfig(profile="dry_run"),
+        )
+        executor = OSActionExecutor(
+            cfg=policy.effective_execution,
+            mouse_backend=NoOpMouseBackend(),
+            keyboard_backend=NoOpKeyboardBackend(),
+        )
+
+        self.assertTrue(policy.valid)
+        self.assertEqual(policy.effective_execution.profile, "live")
+        self.assertTrue(policy.effective_execution.enable_live_os)
+        self.assertTrue(policy.effective_execution.enable_live_cursor)
+        self.assertTrue(policy.effective_execution.enable_live_primary)
+        self.assertTrue(policy.effective_execution.enable_live_secondary)
+        self.assertTrue(policy.effective_execution.enable_live_scroll)
+        self.assertTrue(policy.effective_execution.enable_live_presentation)
+        self.assertEqual(executor.policy.status_text(), "LIVE:cur,pri,sec,scr,prs")
+
+    def test_default_override_policy_brings_up_fallback_live_runtime(self):
+        policy = resolve_operator_override_policy()
+
+        self.assertTrue(policy.valid)
+        self.assertEqual(policy.execution_override, "fallback_live")
+        self.assertEqual(policy.effective_execution.profile, "live")
+        self.assertTrue(policy.effective_execution.enable_live_cursor)
+        self.assertTrue(policy.effective_execution.enable_live_primary)
+        self.assertTrue(policy.effective_execution.enable_live_secondary)
+        self.assertTrue(policy.effective_execution.enable_live_scroll)
+        self.assertTrue(policy.effective_execution.enable_live_presentation)
 
     def test_force_presentation_override_still_requires_safe_context(self):
         policy = resolve_operator_override_policy(

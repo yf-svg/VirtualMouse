@@ -15,7 +15,7 @@ from app.control.window_watch import (
     StubForegroundWindowBackend,
     WindowWatch,
 )
-from app.lifecycle.runtime_status import _format_execution_policy_status, _format_presentation_context
+from app.lifecycle.runtime_status import _format_execution_policy_status, _format_mode_status, _format_presentation_context
 from app.modes.presentation import (
     PRESENTATION_PLAYBACK_ACTIONS,
     PRESENTATION_PLAYBACK_GESTURES,
@@ -177,6 +177,23 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         self.assertEqual(out.state, AppState.ACTIVE_GENERAL)
         self.assertEqual(out.suite_key, "ops")
 
+    def test_router_manual_presentation_exit_suppresses_auto_reentry_until_context_clears(self):
+        router = ModeRouter(auth=GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"))))
+        router.route_auth_edge("ONE", now=1.0)
+        router.route_auth_edge("TWO", now=2.0)
+        router.route_auth_edge("BRAVO", now=3.0)
+        router.sync_presentation_permission(True)
+
+        out = router.request_presentation_exit(source="gesture", reason="THUMBS_DOWN")
+        self.assertEqual(out.state, AppState.ACTIVE_GENERAL)
+
+        still_general = router.sync_presentation_permission(True)
+        self.assertEqual(still_general.state, AppState.ACTIVE_GENERAL)
+
+        router.sync_presentation_permission(False)
+        reentered = router.sync_presentation_permission(True)
+        self.assertEqual(reentered.state, AppState.ACTIVE_PRESENTATION)
+
     def test_router_does_not_enter_presentation_while_locked(self):
         router = ModeRouter()
 
@@ -337,7 +354,7 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         context = watch.presentation_context()
         out = resolve_presentation_action(gesture_label="POINT_RIGHT", context=context)
         safety = ExecutionSafetyGate().evaluate_presentation(
-            suite_out=_suite_out(eligible="POINT_RIGHT", feature_reason="unstable"),
+            suite_out=_suite_out(eligible=None, feature_reason="unstable"),
             presentation_out=out,
             hand_present=True,
         )
@@ -357,6 +374,43 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         self.assertFalse(report.performed)
         self.assertEqual(report.reason, "suppressed_unstable_prediction")
         self.assertEqual(keyboard.keys, [])
+
+    def test_presentation_mode_allows_unstable_rule_held_gesture(self):
+        watch = WindowWatch(
+            backend=StubForegroundWindowBackend(
+                ForegroundWindowSnapshot(
+                    process_name="msedge.exe",
+                    window_title="Deck - Google Slides",
+                    window_rect=(0, 0, 1919, 1079),
+                    screen_size=(1920, 1080),
+                    valid=True,
+                    reason="ok",
+                )
+            )
+        )
+        context = watch.presentation_context()
+        out = resolve_presentation_action(gesture_label="POINT_RIGHT", context=context)
+        safety = ExecutionSafetyGate().evaluate_presentation(
+            suite_out=_suite_out(eligible="POINT_RIGHT", feature_reason="unstable"),
+            presentation_out=out,
+            hand_present=True,
+        )
+        keyboard = NoOpKeyboardBackend()
+        executor = OSActionExecutor(
+            cfg=ExecutionConfig(
+                profile="live",
+                enable_live_os=True,
+                enable_live_presentation=True,
+            ),
+            mouse_backend=NoOpMouseBackend(),
+            keyboard_backend=keyboard,
+        )
+
+        report = executor.apply_presentation_mode(out, allow=safety.allow, suppress_reason=safety.reason)
+
+        self.assertTrue(report.performed)
+        self.assertEqual(report.reason, "presentation_right_emitted")
+        self.assertEqual(keyboard.keys, ["RIGHT"])
 
     def test_overlay_helpers_show_presentation_context_and_execution_policy(self):
         watch = WindowWatch(
@@ -391,6 +445,24 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         self.assertIn("PCTX:POWERPOINT:powerpnt.exe", ctx_text)
         self.assertIn("OVR:EXEC:INHERIT|ROUTE:AUTO", policy_text)
         self.assertIn("XPOL:LIVE:prs", policy_text)
+
+    def test_mode_status_formats_general_and_presentation_activation(self):
+        self.assertEqual(
+            _format_mode_status(AppState.ACTIVE_GENERAL, route_summary="auto:context_denied:none"),
+            "MODE:GENERAL_READY",
+        )
+        self.assertEqual(
+            _format_mode_status(AppState.ACTIVE_GENERAL, route_summary="force_general:forced_general"),
+            "MODE:GENERAL_FORCED",
+        )
+        self.assertEqual(
+            _format_mode_status(AppState.ACTIVE_PRESENTATION, route_summary="auto:context_allowed"),
+            "MODE:PRESENTATION_AUTO",
+        )
+        self.assertEqual(
+            _format_mode_status(AppState.ACTIVE_PRESENTATION, route_summary="force_presentation:forced_presentation"),
+            "MODE:PRESENTATION_FORCED",
+        )
 
 
 if __name__ == "__main__":
