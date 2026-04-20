@@ -89,11 +89,11 @@ class AuthGestureInterpreterTests(unittest.TestCase):
         self.assertIsNone(second.event_label)
         self.assertEqual(third.event_label, "TWO")
 
-    def test_non_auth_gesture_still_stays_hidden(self):
+    def test_fist_no_longer_has_auth_meaning_and_stays_hidden(self):
         interpreter = AuthGestureInterpreter()
 
         out = interpreter.update(
-            suite_out=_suite_out(chosen="SHAKA", stable="SHAKA", eligible="SHAKA"),
+            suite_out=_suite_out(chosen="FIST", stable="FIST", eligible="FIST"),
             auth_state=_auth_state(),
         )
 
@@ -341,6 +341,7 @@ class AuthGestureInterpreterTests(unittest.TestCase):
 
         self.assertIn("PEACE_SIGN", allowed)
         self.assertIn("OPEN_PALM", allowed)
+        self.assertIn("SHAKA", auth_allowed_for_cfg(GestureAuthCfg(sequence=("ONE", "TWO", "THREE"))))
         self.assertLess(priority.index("FIVE"), priority.index("OPEN_PALM"))
 
 

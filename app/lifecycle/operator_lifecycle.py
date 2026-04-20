@@ -47,6 +47,7 @@ class OperatorLifecycleController:
         )
         self._gesture_exit_label = str(getattr(self.cfg, "gesture_exit_label", "")).strip().upper()
         self._gesture_exit_enabled = bool(self.cfg.enable_gesture_exit) and bool(self._gesture_exit_label)
+        self._gesture_release_latched = False
 
     def request_from_key(self, key: int) -> ExitRequest | None:
         token = self._key_token_from_code(key)
@@ -78,12 +79,17 @@ class OperatorLifecycleController:
             return None
         if router_state not in {AppState.ACTIVE_GENERAL, AppState.ACTIVE_PRESENTATION}:
             return None
+        if self._gesture_release_latched:
+            if self._gesture_exit_visible(suite_out):
+                return None
+            self._gesture_release_latched = False
         if suite_out is None or getattr(suite_out, "down", None) != self._gesture_exit_label:
             return None
         hold_frames = int(getattr(suite_out, "hold_frames", 0) or 0)
         if hold_frames < max(1, int(self.cfg.gesture_exit_min_hold_frames)):
             return None
         if router_state == AppState.ACTIVE_PRESENTATION:
+            self._gesture_release_latched = True
             return ExitRequest(
                 source="gesture",
                 reason="presentation_gesture_exit",
@@ -93,6 +99,14 @@ class OperatorLifecycleController:
         if not self._general_exit_is_safe(general_out):
             return None
         return ExitRequest(source="gesture", reason="gesture_exit", trigger=self._gesture_exit_label)
+
+    def _gesture_exit_visible(self, suite_out) -> bool:
+        if suite_out is None:
+            return False
+        return any(
+            getattr(suite_out, attr, None) == self._gesture_exit_label
+            for attr in ("eligible", "stable", "chosen", "down")
+        )
 
     def status_text(
         self,

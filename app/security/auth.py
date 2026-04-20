@@ -17,7 +17,7 @@ class AuthInputState:
 class GestureAuthCfg:
     sequence: tuple[str, ...] = ("ONE", "TWO", "THREE")
     step_timeout_s: float = 4.0
-    reset_gestures: tuple[str, ...] = ("FIST",)
+    reset_gestures: tuple[str, ...] = ("SHAKA",)
     approve_gestures: tuple[str, ...] = ("BRAVO",)
     back_gestures: tuple[str, ...] = ("THUMBS_DOWN",)
     max_failures: int = 5

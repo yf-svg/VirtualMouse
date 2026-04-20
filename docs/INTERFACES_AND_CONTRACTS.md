@@ -52,7 +52,7 @@
   - owns the committed auth buffer for keypad-style entry
   - no-hand / pause frames must not erase committed digits
   - `BRAVO` validates the committed buffer only when the buffer is full
-  - `THUMBS_DOWN` removes only the last committed digit; `FIST` clears the buffer
+  - `THUMBS_DOWN` removes only the last committed digit; `SHAKA` clears the buffer
   - wrong submit may reset the buffer and enter temporary lockout after repeated failures
 
 ### `AuthGestureInterpreter.update(suite_out, auth_state, hand_present=...)`
@@ -206,7 +206,7 @@
 - invariant:
   - presentation logic stays separate from General Mode
   - Presentation Mode is playback-only for prepared slide decks; editing/settings actions must not be inferred here
-  - `POINT_RIGHT/POINT_LEFT/OPEN_PALM/PEACE_SIGN` are resolved only inside presentation policy
+  - `POINT_RIGHT/POINT_LEFT/OPEN_PALM` are resolved only inside presentation policy
   - consumes presentation-approved gesture events, not continuous held labels
   - unsupported or ambiguous context must produce `NO_ACTION`
 
@@ -214,9 +214,42 @@
 - out: `PresentationGestureSignal(gesture_label, event_label, active_frames, threshold_frames, reason)`
 - invariant:
   - presentation runtime gating stays local to Presentation Mode
-  - navigation emits one-shot events per held label; `OPEN_PALM`/`PEACE_SIGN` require stricter confirmation than navigation
+  - navigation emits one-shot events per held label; `OPEN_PALM` requires stricter confirmation than navigation
   - brief hand-loss/reacquire must not duplicate the same playback command
   - non-playback gestures remain invisible to presentation action routing
+
+### `PresentationToolController.update(suite_out, hand_present, pointer_point)`
+- out: `PresentationToolOut(state, intent, pointer_point, owns_presentation, stroke_active, stroke_capturing, selected_color_key, selected_pen_key, selected_size_key, panel_state, reason)`
+- invariant:
+  - presentation-local tool state is separate from slideshow playback routing
+  - `L` toggles the presentation laser and `BRAVO` toggles draw mode
+  - while draw mode is idle, `PEACE_SIGN` opens a right-justified rectangular tool tray; tray hits may consume `PINCH_INDEX` to change color, pen type, or size selection, and those hits must not start a draw stroke
+  - the draw tray is hidden by default and must not block the slide corner during ordinary pointer travel; once opened, it closes again after the pointer leaves the tray bounds for a short grace window
+  - draw-idle tray targeting uses a calmer presentation-local pointer path plus a brief pinch confirm so panel selection does not jump between options on normal hand jitter
+  - tray targeting now flows through the shared pointer-filter seam (`deque`-backed recent history plus EMA output) rather than bespoke inline smoothing, so the selection path can be tuned independently without rewriting controller state logic
+  - pointer motion slows locally inside the tray zone to make color/pen selection easier without slowing free drawing outside that zone
+  - quick `FIST` release undoes one stroke, and sustained `FIST` hold clears annotations once; undo timing must tolerate recognition latency and short detected holds
+  - `stroke_active` may remain true during draw release-grace to preserve controller ownership, but `stroke_capturing` must drop false immediately once pinch eligibility is lost so pen-up motion cannot append a tail segment
+  - stroke capture should also stop on the earlier physical-intent seam (`chosen` dropping away from `PINCH_INDEX`) even before the later debounced `eligible` release completes, so release lag cannot draw a trailing tail line
+  - stroke styling is captured at stroke start so later selector changes do not retroactively repaint existing annotations
+  - the tray model is orthogonal: color, pen type, and size are independent selections rather than hardcoded combined presets
+
+### `PresentationToolExecutor.apply(tool_out, context)`
+- out: `PresentationToolExecutionReport(performed, reason, visible, laser_point, draw_point, stroke_count)`
+- invariant:
+  - presentation tool visuals are overlay-rendered here, not in playback routing or OS key execution
+  - the draw tray stays hidden until explicitly opened in draw-idle mode, then animates in as a modern right-side overlay without affecting slideshow playback routing
+  - annotation strokes are rendered with per-stroke color/pen style rather than a single mutable global style
+  - stroke-point capture must follow `stroke_capturing`, not controller ownership alone, so release-grace frames finish the stroke without adding post-release points
+  - active drawing should not inherit the heavier draw-idle/tray smoothing path; stroke capture uses its own lower-latency smoothing policy so inking stays more direct while idle/tray targeting can remain calmer
+  - laser, draw-idle, and draw-stroking now use separate filter instances over a shared pointer-filter primitive (`deque` history + EMA output) so path tuning stays local to each interaction surface
+  - draw visibility should tolerate short pointer dropouts near screen edges by briefly holding the last mapped draw point instead of blinking the pen out immediately
+  - draw strokes should render as smooth brush paths rather than visibly jagged straight-segment chains
+  - pen presets are semantically distinct (`pen`, `marker`, `highlighter`, `brush`, `quill`) and the overlay renderer should preserve that difference in both picker preview and stroke appearance
+  - size presets are explicit tray selections and must scale stroke width independently from pen identity
+  - presentation tool pointer mapping uses the dedicated presentation pointer anchor rather than the General Mode cursor anchor
+  - presentation tool pointer mapping may also apply a presentation-local input-range remap so the slide reaches full height before the fingertip reaches the tracker edge
+  - laser mode may briefly hold the last mapped point across short pointer dropouts so edge tracking does not flicker or teleport on transient recognition loss
 
 ### `MouseBackend.*`
 - out: side effect only
@@ -277,7 +310,8 @@
 ## STUB CONTRACTS
 - `app/modes/general.py` -> no action semantics defined yet
 - `app/modes/general.py` -> full General Mode dry-run stack is defined; cursor pose policy remains provisional but isolated, with `CLOSED_PALM` as the current default ownership pose
-- `app/modes/presentation.py` -> presentation resolver now exists; `OPEN_PALM` start and `PEACE_SIGN` exit remain provisional/localized until explicitly re-approved
+- `app/modes/presentation.py` -> presentation resolver now exists; `OPEN_PALM` start remains provisional/localized, and presentation exit is currently owned by the localized `THUMBS_DOWN` lifecycle seam rather than the playback action map
+- `app/modes/presentation_tools.py` / `app/control/presentation_tool_execution.py` -> presentation draw tools now include a `PEACE_SIGN`-summoned right-side tray for color and pen presets; the tray may intercept `PINCH_INDEX` locally in draw mode but must not alter slideshow playback semantics or General/Auth/Scroll mappings
 - `app/control/actions.py` -> dry-run contract only
 - `app/control/execution.py` / `mouse.py` -> live General + Presentation execution seams exist; explicit `dry_run`/`live` policy + runtime safety gate keep them fail-safe by default
 - `app/control/mouse.py` -> Windows button/scroll injection uses `SendInput(...)` rather than legacy `mouse_event(...)`; executor must surface backend failures as explicit execution reasons instead of silently assuming success
@@ -290,6 +324,7 @@
 - `app/lifecycle/runtime_loop.py` -> manual `ESC/Q` exit is ignored until the first frame has actually been presented and the startup guard window has elapsed; this prevents spurious OpenCV startup key events from shutting the app down before it is usable
 - `app/lifecycle/operator_lifecycle.py` -> manual exit is explicit; gesture exit is localized to `THUMBS_DOWN` eligible edges in active operator states and remains provisional
 - `app/lifecycle/operator_lifecycle.py` -> `THUMBS_DOWN` on an eligible edge is mode-scoped: in `ACTIVE_PRESENTATION` it requests a presentation-off route change instead of process exit, and in `ACTIVE_GENERAL` it may exit the app only when higher-priority controllers are neutral so scroll/drag/clutch transitions cannot accidentally terminate the session
+- `app/lifecycle/operator_lifecycle.py` -> after a presentation-off `THUMBS_DOWN`, gesture exit must stay latched until that same gesture fully clears; a still-held presentation exit gesture must not immediately cascade into General Mode app exit on the next frame
 - `app/modes/router.py` -> manual presentation-off requests latch General Mode while presentation context remains allowed; auto-presentation may re-enter only after context first clears and then becomes allowed again
 - `app/lifecycle/operator_policy.py` -> centralized execution/routing override policy exists; invalid overrides fail safe to conservative routing and non-live execution
 - `tools/record_gestures.py` -> recorder is now rules-guided and capture-safe: target gesture labels must be canonical, default capture requires both quality pass and target-label eligibility, overwriting existing output requires explicit `--overwrite`, tracker sync happens automatically when full collection context is present unless `--no-tracker-sync` is used, compact raw-landmark sidecars are written by default, and optional accepted-sample snapshot sidecars must stay storage-conscious hand crops rather than full-frame dumps

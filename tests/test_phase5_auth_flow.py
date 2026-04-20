@@ -45,7 +45,7 @@ class Phase5AuthFlowTests(unittest.TestCase):
         auth.update("ONE", now=1.0)
         auth.update("TWO", now=2.0)
 
-        out = auth.update("FIST", now=3.0)
+        out = auth.update("SHAKA", now=3.0)
 
         self.assertEqual(out.status, "reset_cancel")
         self.assertEqual(out.committed_sequence, ())
@@ -125,7 +125,7 @@ class Phase5AuthFlowTests(unittest.TestCase):
     def test_auth_set_is_restricted_to_explicit_runtime_auth_gestures(self):
         self.assertEqual(
             AUTH_ALLOWED,
-            {"FIST", "BRAVO", "THUMBS_DOWN", "ONE", "TWO", "THREE", "PEACE_SIGN"},
+            {"SHAKA", "BRAVO", "THUMBS_DOWN", "ONE", "TWO", "THREE", "PEACE_SIGN"},
         )
 
 

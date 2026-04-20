@@ -6,5 +6,5 @@ PRESENTATION_PRIORITY = [
     "POINT_RIGHT",
     "POINT_LEFT",
     "OPEN_PALM",
-    "PEACE_SIGN",
+    "THUMBS_DOWN",
 ]

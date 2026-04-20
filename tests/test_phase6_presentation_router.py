@@ -19,6 +19,7 @@ from app.lifecycle.runtime_status import _format_execution_policy_status, _forma
 from app.modes.presentation import (
     PRESENTATION_PLAYBACK_ACTIONS,
     PRESENTATION_PLAYBACK_GESTURES,
+    build_presentation_exit_action,
     map_gesture_to_action as map_presentation_action,
     resolve_presentation_action,
 )
@@ -212,11 +213,11 @@ class Phase6PresentationRouterTests(unittest.TestCase):
     def test_presentation_policy_is_explicitly_playback_only(self):
         self.assertEqual(
             PRESENTATION_PLAYBACK_GESTURES,
-            {"POINT_RIGHT", "POINT_LEFT", "OPEN_PALM", "PEACE_SIGN"},
+            {"POINT_RIGHT", "POINT_LEFT", "OPEN_PALM"},
         )
         self.assertEqual(
             PRESENTATION_PLAYBACK_ACTIONS,
-            {"PRESENT_NEXT", "PRESENT_PREV", "PRESENT_START", "PRESENT_EXIT"},
+            {"PRESENT_NEXT", "PRESENT_PREV", "PRESENT_START"},
         )
 
     def test_resolve_presentation_action_maps_reserved_gestures_conservatively(self):
@@ -241,7 +242,7 @@ class Phase6PresentationRouterTests(unittest.TestCase):
         self.assertEqual(next_slide.intent.action_name, "NO_ACTION")
         self.assertIn("navigation_blocked", next_slide.intent.reason)
 
-    def test_presentation_exit_uses_peace_sign(self):
+    def test_peace_sign_no_longer_has_presentation_meaning(self):
         watch = WindowWatch(
             backend=StubForegroundWindowBackend(
                 ForegroundWindowSnapshot(
@@ -258,8 +259,28 @@ class Phase6PresentationRouterTests(unittest.TestCase):
 
         out = resolve_presentation_action(gesture_label="PEACE_SIGN", context=context)
 
-        self.assertEqual(out.intent.action_name, "PRESENT_EXIT")
-        self.assertEqual(out.intent.gesture_label, "PEACE_SIGN")
+        self.assertEqual(out.intent.action_name, "NO_ACTION")
+        self.assertIn("unmapped_gesture:PEACE_SIGN", out.intent.reason)
+
+    def test_thumbs_down_is_not_a_playback_binding(self):
+        watch = WindowWatch(
+            backend=StubForegroundWindowBackend(
+                ForegroundWindowSnapshot(
+                    process_name="msedge.exe",
+                    window_title="Deck - Google Slides",
+                    window_rect=(0, 0, 1919, 1079),
+                    screen_size=(1920, 1080),
+                    valid=True,
+                    reason="ok",
+                )
+            )
+        )
+        context = watch.presentation_context()
+
+        out = resolve_presentation_action(gesture_label="THUMBS_DOWN", context=context)
+
+        self.assertEqual(out.intent.action_name, "NO_ACTION")
+        self.assertIn("unmapped_gesture:THUMBS_DOWN", out.intent.reason)
 
     def test_non_playback_gesture_remains_no_action_even_in_valid_context(self):
         watch = WindowWatch(
@@ -280,6 +301,46 @@ class Phase6PresentationRouterTests(unittest.TestCase):
 
         self.assertEqual(out.intent.action_name, "NO_ACTION")
         self.assertIn("unmapped_gesture:FIST", out.intent.reason)
+
+    def test_build_presentation_exit_action_uses_thumbs_down_when_context_supports_exit(self):
+        watch = WindowWatch(
+            backend=StubForegroundWindowBackend(
+                ForegroundWindowSnapshot(
+                    process_name="msedge.exe",
+                    window_title="Deck - Google Slides",
+                    window_rect=(0, 0, 1919, 1079),
+                    screen_size=(1920, 1080),
+                    valid=True,
+                    reason="ok",
+                )
+            )
+        )
+        context = watch.presentation_context()
+
+        out = build_presentation_exit_action(context=context)
+
+        self.assertEqual(out.intent.action_name, "PRESENT_EXIT")
+        self.assertEqual(out.intent.gesture_label, "THUMBS_DOWN")
+
+    def test_build_presentation_exit_action_blocks_when_context_cannot_exit(self):
+        watch = WindowWatch(
+            backend=StubForegroundWindowBackend(
+                ForegroundWindowSnapshot(
+                    process_name="powerpnt.exe",
+                    window_title="Deck - PowerPoint",
+                    window_rect=(50, 50, 1050, 750),
+                    screen_size=(1920, 1080),
+                    valid=True,
+                    reason="ok",
+                )
+            )
+        )
+        context = watch.presentation_context()
+
+        out = build_presentation_exit_action(context=context)
+
+        self.assertEqual(out.intent.action_name, "NO_ACTION")
+        self.assertIn("presentation_exit_blocked", out.intent.reason)
 
     def test_resolve_presentation_action_rejects_unsupported_context(self):
         watch = WindowWatch(

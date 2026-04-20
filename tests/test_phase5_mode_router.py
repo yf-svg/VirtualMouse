@@ -60,7 +60,7 @@ class Phase5ModeRouterTests(unittest.TestCase):
         router = ModeRouter(auth=GestureAuth(GestureAuthCfg(sequence=("ONE", "TWO"))))
 
         router.route_auth_edge("ONE", now=1.0)
-        out = router.route_auth_edge("FIST", now=2.0)
+        out = router.route_auth_edge("SHAKA", now=2.0)
 
         self.assertEqual(out.state, AppState.AUTHENTICATING)
         self.assertEqual(out.auth_status, "reset_cancel")

@@ -12,8 +12,9 @@ from app.control.actions import format_action_intent
 from app.control.clutch import ClutchController
 from app.control.execution import ExecutionBatchReport, OSActionExecutor
 from app.control.execution_safety import ExecutionSafetyGate
+from app.control.presentation_tool_execution import PresentationToolExecutor
 from app.control.cursor_preview import CursorPreviewController, CursorPreviewState
-from app.control.cursor_space import cursor_point_from_landmarks
+from app.control.cursor_space import cursor_point_from_landmarks, presentation_pointer_point_from_landmarks
 from app.control.primary_interaction import PrimaryInteractionController
 from app.control.secondary_interaction import SecondaryInteractionController
 from app.control.scroll_mode import ScrollModeController
@@ -29,11 +30,14 @@ from app.lifecycle.runtime_status import (
     _format_general_controls,
     _format_mode_status,
     _format_presentation_context,
+    _format_presentation_tool_execution,
+    _format_presentation_tools,
 )
 from app.modes.general import resolve_general_action
 from app.modes.router import ModeRouter
-from app.modes.presentation import PresentationModeOut, resolve_presentation_action
-from app.modes.presentation_runtime import PresentationGestureInterpreter
+from app.modes.presentation import PresentationModeOut, build_presentation_exit_action, resolve_presentation_action
+from app.modes.presentation_runtime import PresentationGestureInterpreter, update_presentation_playback_signal
+from app.modes.presentation_tools import PresentationToolController
 from app.perception.camera import Camera
 from app.perception.hand_tracker import HandTracker
 from app.perception.landmark_smoothing import SelectiveLandmarkSmoother
@@ -56,6 +60,7 @@ class RuntimeContext:
     auth_interpreter: AuthGestureInterpreter
     ops_suite: GestureSuite
     presentation_interpreter: PresentationGestureInterpreter
+    presentation_tools: PresentationToolController
     router: ModeRouter
     clutch: ClutchController
     scroll_mode: ScrollModeController
@@ -66,6 +71,7 @@ class RuntimeContext:
     override_policy: ResolvedOperatorOverridePolicy
     executor: OSActionExecutor
     execution_safety: ExecutionSafetyGate
+    presentation_tool_executor: PresentationToolExecutor
     window_watch: WindowWatch
     auth_overlay_store: AuthOverlayStateStore
     overlay: Overlay
@@ -125,6 +131,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
     auth_interpreter = AuthGestureInterpreter(auth_cfg=router.auth_cfg)
     ops_suite = GestureSuite(**ops_runtime_suite_kwargs())
     presentation_interpreter = PresentationGestureInterpreter()
+    presentation_tools = PresentationToolController()
     clutch = ClutchController()
     scroll_mode = ScrollModeController()
     primary_interaction = PrimaryInteractionController()
@@ -134,6 +141,10 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
     operator_lifecycle = OperatorLifecycleController()
     executor = OSActionExecutor(cfg=override_policy.effective_execution)
     execution_safety = ExecutionSafetyGate()
+    presentation_tool_executor = PresentationToolExecutor(
+        live_enabled=bool(executor.policy.live_master_enabled and executor.policy.presentation_enabled),
+        cfg=CONFIG.presentation_tools,
+    )
     window_watch = WindowWatch()
     auth_overlay_store = AuthOverlayStateStore()
     overlay = Overlay()
@@ -160,6 +171,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
         auth_interpreter=auth_interpreter,
         ops_suite=ops_suite,
         presentation_interpreter=presentation_interpreter,
+        presentation_tools=presentation_tools,
         router=router,
         clutch=clutch,
         scroll_mode=scroll_mode,
@@ -170,6 +182,7 @@ def _build_runtime_context(initial_state: AppState) -> RuntimeContext:
         override_policy=override_policy,
         executor=executor,
         execution_safety=execution_safety,
+        presentation_tool_executor=presentation_tool_executor,
         window_watch=window_watch,
         auth_overlay_store=auth_overlay_store,
         overlay=overlay,
@@ -339,6 +352,7 @@ def _perform_exit(
     base_extra: str = "",
 ) -> None:
     neutralization = neutralize_runtime_ownership(ctx, reason=request.reason)
+    ctx.presentation_tool_executor.reset(reason="app_exit")
     route = ctx.router.request_exit(source=request.source, reason=request.trigger)
     state.auth_status = route.auth_status
     state.auth_progress_text = route.auth_progress_text
@@ -367,9 +381,23 @@ def _perform_presentation_exit(
     ctx: RuntimeContext,
     state: RuntimeState,
     request,
+    *,
+    presentation_context: PresentationContext | None = None,
 ) -> None:
     neutralization = neutralize_runtime_ownership(ctx, reason=request.reason)
+    exit_context = presentation_context or ctx.window_watch.presentation_context()
+    exit_out = build_presentation_exit_action(
+        context=exit_context,
+        gesture_label=request.trigger,
+    )
+    ctx.executor.apply_presentation_mode(
+        exit_out,
+        allow=exit_out.intent.action_name != "NO_ACTION",
+        suppress_reason=exit_out.intent.reason,
+    )
     ctx.presentation_interpreter.reset()
+    ctx.presentation_tools.reset()
+    ctx.presentation_tool_executor.reset(reason="presentation_exit")
     route = ctx.router.request_presentation_exit(source=request.source, reason=request.trigger)
     state.auth_status = route.auth_status
     state.auth_progress_text = route.auth_progress_text
@@ -449,6 +477,8 @@ def run_loop(initial_state: AppState) -> None:
                 auth_overlay_state = None
 
                 if ctx.router.state in {AppState.IDLE_LOCKED, AppState.AUTHENTICATING}:
+                    ctx.presentation_tools.reset()
+                    ctx.presentation_tool_executor.reset(reason="auth_mode_active")
                     out = ctx.auth_suite.detect(state.last_hand)
                     _log_detection(seq=seq, hand_present=True, handed=handed, quality=out.feature_reason)
                     _log_gesture(seq=seq, out=out)
@@ -489,6 +519,11 @@ def run_loop(initial_state: AppState) -> None:
                         anchor_mode=CONFIG.cursor_space.anchor_mode,
                         mirror_x=CONFIG.cursor_space.mirror_x,
                     )
+                    presentation_pointer_point = presentation_pointer_point_from_landmarks(
+                        lm_smooth,
+                        cfg=CONFIG.presentation_tools,
+                        mirror_x=CONFIG.cursor_space.mirror_x,
+                    )
                     if ctx.router.state == AppState.ACTIVE_PRESENTATION:
                         _log_mode(seq=seq, state=ctx.router.state, route_summary=route_decision.summary(), path="presentation")
                         exit_request = ctx.operator_lifecycle.request_from_suite_out(
@@ -496,7 +531,12 @@ def run_loop(initial_state: AppState) -> None:
                             router_state=ctx.router.state,
                         )
                         if exit_request is not None and exit_request.effect == "exit_presentation":
-                            _perform_presentation_exit(ctx, state, exit_request)
+                            _perform_presentation_exit(
+                                ctx,
+                                state,
+                                exit_request,
+                                presentation_context=presentation_context,
+                            )
                             extra = (
                                 f"{_format_hand_overlay(handed, out)} | "
                                 f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
@@ -505,9 +545,20 @@ def run_loop(initial_state: AppState) -> None:
                                 f"{state.lifecycle_status_text}"
                             )
                         else:
-                            presentation_signal = ctx.presentation_interpreter.update(
+                            tool_out = ctx.presentation_tools.update(
                                 suite_out=out,
                                 hand_present=True,
+                                pointer_point=presentation_pointer_point,
+                            )
+                            presentation_signal = update_presentation_playback_signal(
+                                interpreter=ctx.presentation_interpreter,
+                                suite_out=out,
+                                hand_present=True,
+                                tool_out=tool_out,
+                            )
+                            tool_exec_report = ctx.presentation_tool_executor.apply(
+                                tool_out,
+                                presentation_context,
                             )
                             ctx.clutch.reset()
                             ctx.scroll_mode.reset()
@@ -535,6 +586,8 @@ def run_loop(initial_state: AppState) -> None:
                                 f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
                                 f"{_format_presentation_context(presentation_context)} | "
                                 f"{presentation_signal.status_text()} | "
+                                f"{_format_presentation_tools(tool_out)} | "
+                                f"{_format_presentation_tool_execution(tool_exec_report)} | "
                                 f"CLT:{ctx.clutch.state.value} | "
                                 f"SCR:{ctx.scroll_mode.state.value} | "
                                 f"PRI:{ctx.primary_interaction.state.value} | "
@@ -547,6 +600,8 @@ def run_loop(initial_state: AppState) -> None:
                             )
                     else:
                         ctx.presentation_interpreter.reset()
+                        ctx.presentation_tools.reset()
+                        ctx.presentation_tool_executor.reset(reason="general_mode_active")
                         _log_mode(seq=seq, state=ctx.router.state, route_summary=route_decision.summary(), path="general")
                         cursor_policy = ctx.cursor_preview.policy.evaluate(out.eligible)
                         if ctx.cursor_preview.state == CursorPreviewState.NEUTRAL and cursor_policy.eligible:
@@ -617,6 +672,8 @@ def run_loop(initial_state: AppState) -> None:
                 ctx.smoother.reset()
                 auth_overlay_state = None
                 if ctx.router.state in {AppState.IDLE_LOCKED, AppState.AUTHENTICATING}:
+                    ctx.presentation_tools.reset()
+                    ctx.presentation_tool_executor.reset(reason="auth_mode_active")
                     ctx.auth_suite.reset()
                     ctx.auth_interpreter.update(
                         suite_out=None,
@@ -644,6 +701,8 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_overlay_store.reset()
                     ctx.ops_suite.reset()
                     ctx.presentation_interpreter.reset()
+                    ctx.presentation_tools.reset()
+                    ctx.presentation_tool_executor.reset(reason="general_mode_active")
                     general_out = resolve_general_action(
                         gesture_label=None,
                         cursor_gesture_label=None,
@@ -687,9 +746,20 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_interpreter.reset()
                     ctx.auth_overlay_store.reset()
                     ctx.ops_suite.reset()
-                    presentation_signal = ctx.presentation_interpreter.update(
+                    tool_out = ctx.presentation_tools.update(
                         suite_out=None,
                         hand_present=False,
+                        pointer_point=None,
+                    )
+                    presentation_signal = update_presentation_playback_signal(
+                        interpreter=ctx.presentation_interpreter,
+                        suite_out=None,
+                        hand_present=False,
+                        tool_out=tool_out,
+                    )
+                    tool_exec_report = ctx.presentation_tool_executor.apply(
+                        tool_out,
+                        presentation_context,
                     )
                     ctx.clutch.reset()
                     ctx.scroll_mode.reset()
@@ -715,6 +785,8 @@ def run_loop(initial_state: AppState) -> None:
                         f"{_format_mode_status(ctx.router.state, route_summary=route_decision.summary())} | "
                         f"{_format_presentation_context(presentation_context)} | "
                         f"{presentation_signal.status_text()} | "
+                        f"{_format_presentation_tools(tool_out)} | "
+                        f"{_format_presentation_tool_execution(tool_exec_report)} | "
                         f"{format_action_intent(presentation_out.intent)} | "
                         f"{_format_execution_policy_status(ctx, safety.reason, route_summary=route_decision.summary())} | "
                         f"{state.lifecycle_status_text} | "
@@ -725,6 +797,8 @@ def run_loop(initial_state: AppState) -> None:
                     ctx.auth_overlay_store.reset()
                     ctx.ops_suite.reset()
                     ctx.presentation_interpreter.reset()
+                    ctx.presentation_tools.reset()
+                    ctx.presentation_tool_executor.reset(reason="non_presentation_state")
                     ctx.clutch.reset()
                     ctx.scroll_mode.reset()
                     ctx.primary_interaction.reset()
@@ -758,6 +832,10 @@ def run_loop(initial_state: AppState) -> None:
     finally:
         try:
             neutralize_runtime_ownership(ctx, reason="runtime_shutdown")
+        except Exception:
+            pass
+        try:
+            ctx.presentation_tool_executor.close()
         except Exception:
             pass
         ctx.cam_thread.stop()

@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 from app.config import CONFIG
 from app.gestures.classifier import SVMClassifier
 from app.gestures.features import assess_hand_input_quality, extract_feature_vector, get_landmarks
-from app.gestures.sets.labels import ALL_ALLOWED_LABELS, UNIFIED_LABEL_ORDER
+from app.gestures.sets.labels import ALL_ALLOWED_LABELS, AUTH_LABEL_ORDER, OPS_LABEL_ORDER, UNIFIED_LABEL_ORDER
 from app.gestures.suite import GestureSuite, GestureSuiteOut
 from app.perception.camera import Camera
 from app.perception.hand_tracker import HandTracker
@@ -45,6 +45,22 @@ SNAPSHOT_ARTIFACT_VERSION = "phase4.snapshots.v1"
 DEFAULT_SNAPSHOT_MAX_EDGE = 256
 DEFAULT_SNAPSHOT_JPEG_QUALITY = 70
 DEFAULT_SNAPSHOT_PADDING_RATIO = 0.18
+RECORDER_TARGET_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "TWO": ("PEACE_SIGN",),
+    "PEACE_SIGN": ("TWO",),
+    "FIVE": ("OPEN_PALM",),
+    "OPEN_PALM": ("FIVE",),
+    "THREE": ("PINCH_PINKY",),
+    "PINCH_PINKY": ("THREE",),
+}
+RECORDER_BATCH_PREFERRED_LABELS: dict[str, str] = {
+    "TWO": "PEACE_SIGN",
+    "PEACE_SIGN": "PEACE_SIGN",
+    "FIVE": "OPEN_PALM",
+    "OPEN_PALM": "OPEN_PALM",
+    "PINCH_PINKY": "THREE",
+    "THREE": "THREE",
+}
 
 
 class RecorderState(str, Enum):
@@ -251,7 +267,114 @@ def _ensure_output_path_available(output_path: Path, *, overwrite: bool) -> None
         )
 
 
-def _build_recorder_suite() -> GestureSuite:
+def _preferred_batch_label(label: str) -> str:
+    normalized = _validate_gesture_label(label)
+    return RECORDER_BATCH_PREFERRED_LABELS.get(normalized, normalized)
+
+
+def _labels_for_batch_scope(batch_scope: str) -> tuple[str, ...]:
+    normalized = str(batch_scope).strip().lower()
+    if normalized == "auth":
+        return AUTH_LABEL_ORDER
+    if normalized == "ops":
+        return OPS_LABEL_ORDER
+    if normalized == "unified":
+        labels: list[str] = []
+        for label in UNIFIED_LABEL_ORDER:
+            preferred = _preferred_batch_label(label)
+            if preferred not in labels:
+                labels.append(preferred)
+        return tuple(labels)
+    raise SystemExit(f"[Recorder] Unsupported --batch-scope {batch_scope!r}. Use auth, ops, or unified.")
+
+
+def _resolve_recording_targets(
+    *,
+    gesture_label: str | None,
+    batch_scope: str | None,
+    batch_labels: list[str],
+    start_at_label: str | None,
+) -> tuple[str, ...]:
+    if gesture_label and (batch_scope or batch_labels):
+        raise SystemExit(
+            "[Recorder] Use either --gesture-label for a single session or --batch-scope/--batch-label for batch recording."
+        )
+
+    if batch_labels:
+        targets: list[str] = []
+        for label in batch_labels:
+            normalized = _preferred_batch_label(label)
+            if normalized not in targets:
+                targets.append(normalized)
+    elif batch_scope:
+        targets = list(_labels_for_batch_scope(batch_scope))
+    elif gesture_label:
+        targets = [_validate_gesture_label(gesture_label)]
+    else:
+        raise SystemExit(
+            "[Recorder] Provide --gesture-label for one session, or use --batch-scope/--batch-label for batch recording."
+        )
+
+    if start_at_label:
+        if batch_scope == "unified" or batch_labels:
+            start_label = _preferred_batch_label(start_at_label)
+        else:
+            start_label = _validate_gesture_label(start_at_label)
+        if start_label not in targets:
+            raise SystemExit(
+                f"[Recorder] --start-at-label {start_label!r} is not in the resolved target list: {', '.join(targets)}"
+            )
+        targets = targets[targets.index(start_label):]
+
+    return tuple(targets)
+
+
+def _batch_session_id(base_session_id: str, target_index: int) -> str:
+    return f"{_slugify(base_session_id)}_{target_index + 1:03d}"
+
+
+def _default_capture_mode_for_label(gesture_label: str) -> CaptureMode:
+    return CaptureMode.MANUAL if gesture_label.startswith("PINCH_") else CaptureMode.AUTO
+
+
+def _next_target_label(targets: tuple[str, ...], current_index: int) -> str | None:
+    next_index = current_index + 1
+    if next_index >= len(targets):
+        return None
+    return targets[next_index]
+
+
+def _batch_progress_text(targets: tuple[str, ...], current_index: int) -> str:
+    next_label = _next_target_label(targets, current_index)
+    return f"{current_index + 1}/{len(targets)} | Next: {next_label or 'FINISH'}"
+
+
+def _priority_for_recording_target(target_label: str) -> tuple[str, ...]:
+    normalized = _validate_gesture_label(target_label)
+    ordered = [normalized, *RECORDER_TARGET_EQUIVALENTS.get(normalized, ())]
+    unique: list[str] = []
+    for label in ordered:
+        if label not in unique:
+            unique.append(label)
+    unique.extend(label for label in UNIFIED_LABEL_ORDER if label not in unique)
+    ordered = unique
+    return tuple(ordered)
+
+
+def _recording_target_variants(target_label: str) -> tuple[str, ...]:
+    normalized = _validate_gesture_label(target_label)
+    return (normalized, *RECORDER_TARGET_EQUIVALENTS.get(normalized, ()))
+
+
+def _normalize_recording_label(target_label: str, observed_label: str | None) -> str | None:
+    if observed_label is None:
+        return None
+    if observed_label in set(_recording_target_variants(target_label)):
+        return target_label
+    return observed_label
+
+
+def _build_recorder_suite(target_label: str) -> GestureSuite:
     classifier = SVMClassifier(
         model_path=RECORDER_RULES_ONLY_MODEL_PATH,
         allowed=ALL_ALLOWED_LABELS,
@@ -259,7 +382,7 @@ def _build_recorder_suite() -> GestureSuite:
     return GestureSuite(
         classifier=classifier,
         allowed=ALL_ALLOWED_LABELS,
-        priority=UNIFIED_LABEL_ORDER,
+        priority=_priority_for_recording_target(target_label),
         allow_priority=True,
     )
 
@@ -290,13 +413,15 @@ def _build_recorder_guidance(
             capture_ready=True,
         )
 
-    if suite_out.eligible == target_label:
+    target_variants = set(_recording_target_variants(target_label))
+
+    if suite_out.eligible in target_variants:
         gate_reason = "ok"
         capture_ready = True
-    elif suite_out.stable == target_label:
+    elif suite_out.stable in target_variants:
         gate_reason = f"label_hold_pending:{target_label}"
         capture_ready = False
-    elif suite_out.chosen == target_label:
+    elif suite_out.chosen in target_variants:
         gate_reason = f"label_switch_pending:{target_label}"
         capture_ready = False
     else:
@@ -305,9 +430,9 @@ def _build_recorder_guidance(
         capture_ready = False
 
     return RecorderGuidance(
-        chosen=suite_out.chosen,
-        stable=suite_out.stable,
-        eligible=suite_out.eligible,
+        chosen=_normalize_recording_label(target_label, suite_out.chosen),
+        stable=_normalize_recording_label(target_label, suite_out.stable),
+        eligible=_normalize_recording_label(target_label, suite_out.eligible),
         source=suite_out.source,
         gate_reason=gate_reason,
         capture_ready=capture_ready,
@@ -665,11 +790,11 @@ def _draw_overlay(
     quality_ok: bool,
     handedness: str | None,
     guidance: RecorderGuidance | None,
+    batch_progress: str | None = None,
+    batch_next_label: str | None = None,
 ) -> None:
     now = time.perf_counter()
     h, w = frame_bgr.shape[:2]
-    cv2.rectangle(frame_bgr, (8, 8), (min(w - 8, 610), 270), (18, 18, 18), -1)
-    cv2.rectangle(frame_bgr, (8, 8), (min(w - 8, 610), 270), (70, 70, 70), 1)
 
     guide_text = "Guide: target not checked"
     if guidance is not None:
@@ -691,6 +816,8 @@ def _draw_overlay(
         (f"Gate: {_humanize_quality_reason(quality_reason, quality_ok)}", 0.58),
         (f"Last result: {runtime.last_result}", 0.58),
     ]
+    if batch_progress is not None:
+        lines.insert(3, (f"Batch: {batch_progress}", 0.58))
 
     y = 32
     for text, scale in lines:
@@ -698,15 +825,16 @@ def _draw_overlay(
         y += 24
 
     if now <= runtime.help_visible_until:
-        cv2.rectangle(frame_bgr, (8, 230), (min(w - 8, 610), 352), (18, 18, 18), -1)
-        cv2.rectangle(frame_bgr, (8, 230), (min(w - 8, 610), 352), (70, 70, 70), 1)
         _draw_text(frame_bgr, "How to record", (18, 252), 0.62)
         _draw_text(frame_bgr, "Record one gesture label per session.", (18, 276), 0.54)
         _draw_text(frame_bgr, "Press M to switch between AUTO and MANUAL capture.", (18, 298), 0.54)
         _draw_text(frame_bgr, "AUTO uses interval capture. MANUAL arms with SPACE and captures on C.", (18, 320), 0.54)
         _draw_text(frame_bgr, "Capture now also waits for the target label to be confirmed.", (18, 342), 0.54)
 
-    footer = "M mode | SPACE start/pause | C capture once | U undo | X discard | Q/Esc save+quit"
+    if batch_progress is None:
+        footer = "M mode | SPACE start/pause | C capture once | U undo | X discard | Q/Esc save+quit"
+    else:
+        footer = "M mode | SPACE start/pause | C capture once | U undo | X discard label | Q review | Esc exit batch"
     _draw_text(frame_bgr, footer, (10, h - 15), 0.55)
 
     if runtime.state == RecorderState.COUNTDOWN and runtime.countdown_started_at is not None:
@@ -723,15 +851,27 @@ def _draw_overlay(
         bottom = min(h - 30, top + 300)
         cv2.rectangle(frame_bgr, (left, top), (right, bottom), (14, 14, 14), -1)
         cv2.rectangle(frame_bgr, (left, top), (right, bottom), (220, 220, 220), 2)
-        title = "Save And Quit?" if session.samples else "Quit Without Saving?"
+        if batch_progress is None:
+            title = "Save And Quit?" if session.samples else "Quit Without Saving?"
+        else:
+            title = "Save And Continue?" if session.samples else "Skip This Label?"
         _draw_text(frame_bgr, title, (left + 18, top + 30), 0.72)
-        if not session.samples:
+        if batch_progress is not None:
+            _draw_text(frame_bgr, f"Batch: {batch_progress}", (left + 18, top + 58), 0.54)
+        elif not session.samples:
             _draw_text(frame_bgr, "No valid samples were captured in this session.", (left + 18, top + 58), 0.54)
-        y = top + 88
+        y = top + (112 if batch_progress is not None else 88)
         for line in _build_session_summary(session, runtime, cfg, now=now):
             _draw_text(frame_bgr, line, (left + 18, y), 0.54)
             y += 24
-        footer = "Y confirm | N return | D discard session"
+        if batch_progress is None:
+            footer = "Y confirm | N return | R retake | D discard session"
+        elif session.samples:
+            continue_text = "next" if batch_next_label is not None else "finish"
+            footer = f"Y save+{continue_text} | N return | R retake | D discard+{continue_text} | Esc save+{'exit' if batch_next_label is not None else 'finish'}"
+        else:
+            continue_text = "next" if batch_next_label is not None else "finish"
+            footer = f"Y skip+{continue_text} | N return | R retake | D discard+{continue_text} | Esc exit batch"
         _draw_text(frame_bgr, footer, (left + 18, bottom - 18), 0.54)
 
 
@@ -843,9 +983,48 @@ def _discard_session(session: RecordingSession, artifacts: RecorderArtifacts) ->
     artifacts.snapshot_blobs.clear()
 
 
+def _retake_session(
+    cfg: RecorderConfig,
+    runtime: RecorderRuntime,
+    *,
+    now: float,
+) -> tuple[RecordingSession, RecorderArtifacts]:
+    _update_state(runtime, RecorderState.PAUSED)
+    runtime.accepted_samples = 0
+    runtime.rejected_attempts = 0
+    runtime.label_rejections = 0
+    runtime.started_at_monotonic = now
+    _set_last_result(runtime, "Retake ready. Press SPACE to start again.", level="info")
+    return _make_session(cfg), RecorderArtifacts()
+
+
 def _set_last_result(runtime: RecorderRuntime, message: str, *, level: str = "info") -> None:
     runtime.last_result = message
     runtime.last_result_level = level
+
+
+def _make_runtime_for_target(
+    gesture_label: str,
+    *,
+    show_help: bool,
+    now: float,
+) -> RecorderRuntime:
+    capture_mode = _default_capture_mode_for_label(gesture_label)
+    runtime = RecorderRuntime(
+        state=RecorderState.STARTUP_HELP if show_help else RecorderState.PAUSED,
+        capture_mode=capture_mode,
+        help_visible_until=(now + 6.0) if show_help else 0.0,
+        started_at_monotonic=now,
+    )
+    if capture_mode == CaptureMode.MANUAL:
+        _set_last_result(
+            runtime,
+            f"Ready for {gesture_label}. MANUAL mode selected. Press SPACE to arm, then C to capture.",
+            level="info",
+        )
+    else:
+        _set_last_result(runtime, f"Ready for {gesture_label}. Press SPACE to start capture.", level="info")
+    return runtime
 
 
 def _update_state(runtime: RecorderRuntime, new_state: RecorderState) -> None:
@@ -895,9 +1074,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record labeled gesture feature vectors for the Virtual Gesture Mouse project."
     )
-    parser.add_argument("--gesture-label", required=True, help="Target gesture label for this recording session.")
+    parser.add_argument("--gesture-label", help="Target gesture label for this recording session.")
+    parser.add_argument("--batch-scope", choices=("auth", "ops", "unified"), help="Run the recorder as a continuous batch over the canonical label order for the chosen scope.")
+    parser.add_argument("--batch-label", action="append", default=[], dest="batch_labels", help="Run the recorder in batch mode for a custom ordered label list. Repeat as needed.")
+    parser.add_argument("--start-at-label", help="Optional label to resume from within the resolved batch plan.")
     parser.add_argument("--user-id", required=True, help="User identifier for grouped evaluation later.")
-    parser.add_argument("--session-id", default=default_session_id(), help="Session identifier. Defaults to a timestamp.")
+    parser.add_argument("--session-id", default=None, help="Session identifier. Defaults to a timestamp in single mode and to a shared run prefix in batch mode.")
     parser.add_argument("--capture-context", action="append", default=[], help="Optional KEY=VALUE metadata. Repeat as needed.")
     parser.add_argument("--sample-interval", type=float, default=0.20, help="Minimum seconds between automatic captures while recording.")
     parser.add_argument("--max-samples", type=int, default=None, help="Optional automatic stop once this many samples are captured.")
@@ -927,19 +1109,34 @@ def _make_session(cfg: RecorderConfig) -> RecordingSession:
     )
 
 
-def _tracker_row_key(cfg: RecorderConfig) -> tuple[str, str, str, str, str, str] | None:
+def _tracker_row_keys(cfg: RecorderConfig) -> tuple[tuple[str, str, str, str, str, str], ...] | None:
     context = cfg.capture_context
-    values = (
+    common_values = (
         context.get("round"),
         context.get("scope"),
         cfg.user_id,
         context.get("background"),
         context.get("lighting"),
-        cfg.gesture_label,
     )
-    if any(not value for value in values):
+    if any(not value for value in common_values):
         return None
-    return tuple(str(value) for value in values)
+    labels = [cfg.gesture_label]
+    scope = str(context.get("scope", "")).strip().lower()
+    if scope == "unified":
+        for label in _recording_target_variants(cfg.gesture_label):
+            if label not in labels:
+                labels.append(label)
+    return tuple(
+        (
+            str(common_values[0]),
+            str(common_values[1]),
+            str(common_values[2]),
+            str(common_values[3]),
+            str(common_values[4]),
+            str(label),
+        )
+        for label in labels
+    )
 
 
 def _sync_tracker_row(
@@ -953,11 +1150,12 @@ def _sync_tracker_row(
 ) -> str:
     if not cfg.tracker_sync_enabled:
         return "disabled"
-    row_key = _tracker_row_key(cfg)
-    if row_key is None:
+    row_keys = _tracker_row_keys(cfg)
+    if row_keys is None:
         return "skipped_missing_context"
     if not tracker_path.exists():
         return "skipped_missing_tracker"
+    row_key_set = set(row_keys)
 
     with tracker_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -974,7 +1172,7 @@ def _sync_tracker_row(
             row.get("lighting", ""),
             row.get("gesture_label", ""),
         )
-        if current_key != row_key:
+        if current_key not in row_key_set:
             continue
         row["accepted_samples"] = str(len(session.samples))
         row["rejected_attempts"] = str(runtime.rejected_attempts)
@@ -987,10 +1185,12 @@ def _sync_tracker_row(
         else:
             row["status"] = "redo" if len(session.samples) > 0 else "not_started"
             row["file_path"] = ""
-        notes = [token for token in [row.get("notes", "").strip(), f"session_id={cfg.session_id}"] if token]
+        note_tokens = [row.get("notes", "").strip(), f"session_id={cfg.session_id}"]
+        if row.get("gesture_label", "") != cfg.gesture_label:
+            note_tokens.append(f"equivalent_to={cfg.gesture_label}")
+        notes = [token for token in note_tokens if token]
         row["notes"] = " | ".join(dict.fromkeys(notes))
         updated = True
-        break
 
     if not updated:
         return "skipped_no_matching_row"
@@ -1002,6 +1202,65 @@ def _sync_tracker_row(
     return "updated"
 
 
+def _report_tracker_sync(status: str) -> None:
+    print(f"[Recorder] Tracker sync: {status}")
+
+
+def _save_session_and_report(
+    *,
+    cfg: RecorderConfig,
+    session: RecordingSession,
+    runtime: RecorderRuntime,
+    artifacts: RecorderArtifacts,
+) -> None:
+    save_session(session, cfg.output_path, cfg=cfg, artifacts=artifacts)
+    sync_status = _sync_tracker_row(
+        cfg=cfg,
+        session=session,
+        runtime=runtime,
+        discarded=False,
+        saved=True,
+    )
+    _play_sound("save", enabled=cfg.sound_enabled)
+    _report_tracker_sync(sync_status)
+    print(f"[Recorder] Saved {len(session.samples)} samples to {cfg.output_path}")
+
+
+def _discard_session_and_report(
+    *,
+    cfg: RecorderConfig,
+    session: RecordingSession,
+    runtime: RecorderRuntime,
+) -> None:
+    sync_status = _sync_tracker_row(
+        cfg=cfg,
+        session=session,
+        runtime=runtime,
+        discarded=True,
+        saved=False,
+    )
+    _play_sound("discard", enabled=cfg.sound_enabled)
+    _report_tracker_sync(sync_status)
+    print("[Recorder] Session discarded.")
+
+
+def _close_session_without_saving_and_report(
+    *,
+    cfg: RecorderConfig,
+    session: RecordingSession,
+    runtime: RecorderRuntime,
+) -> None:
+    sync_status = _sync_tracker_row(
+        cfg=cfg,
+        session=session,
+        runtime=runtime,
+        discarded=False,
+        saved=False,
+    )
+    _report_tracker_sync(sync_status)
+    print("[Recorder] Session closed without saving.")
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     capture_context = parse_capture_context(args.capture_context)
@@ -1009,48 +1268,48 @@ def main() -> None:
         capture_context=capture_context,
         skip_check=args.skip_readiness_check,
     )
-    gesture_label = _validate_gesture_label(args.gesture_label)
-    output_path = args.output or build_output_path(gesture_label, args.user_id, args.session_id)
-    _ensure_output_path_available(output_path, overwrite=bool(args.overwrite))
-    cfg = RecorderConfig(
-        gesture_label=gesture_label,
-        user_id=args.user_id,
-        session_id=args.session_id,
-        output_path=output_path,
-        capture_context=capture_context,
-        sample_interval_s=float(args.sample_interval),
-        max_samples=args.max_samples,
-        countdown_seconds=max(0.0, float(args.countdown_seconds)),
-        sound_enabled=not args.mute_sounds,
-        mirror_view=CONFIG.mirror_view,
-        overwrite_output=bool(args.overwrite),
-        require_label_match=not bool(args.allow_label_mismatch),
-        tracker_sync_enabled=not bool(args.no_tracker_sync),
-        save_raw_landmarks=not bool(args.no_raw_landmarks),
-        save_snapshots=bool(args.save_snapshots),
-        snapshot_max_edge=max(96, int(args.snapshot_max_edge)),
-        snapshot_jpeg_quality=max(30, min(95, int(args.snapshot_jpeg_quality))),
-        detect_scale=CONFIG.detect_scale,
-        enable_preprocessing=CONFIG.enable_preprocessing,
+    targets = _resolve_recording_targets(
+        gesture_label=args.gesture_label,
+        batch_scope=args.batch_scope,
+        batch_labels=args.batch_labels,
+        start_at_label=args.start_at_label,
     )
+    batch_mode = bool(args.batch_scope or args.batch_labels or len(targets) > 1)
+    if batch_mode and args.output is not None and len(targets) > 1:
+        raise SystemExit(
+            "[Recorder] --output is only supported for a single session. Batch mode writes one file per gesture automatically."
+        )
 
-    session = _make_session(cfg)
+    base_session_id = str(args.session_id or default_session_id())
+    common_cfg_kwargs = {
+        "user_id": args.user_id,
+        "capture_context": capture_context,
+        "sample_interval_s": float(args.sample_interval),
+        "max_samples": args.max_samples,
+        "countdown_seconds": max(0.0, float(args.countdown_seconds)),
+        "sound_enabled": not args.mute_sounds,
+        "mirror_view": CONFIG.mirror_view,
+        "overwrite_output": bool(args.overwrite),
+        "require_label_match": not bool(args.allow_label_mismatch),
+        "tracker_sync_enabled": not bool(args.no_tracker_sync),
+        "save_raw_landmarks": not bool(args.no_raw_landmarks),
+        "save_snapshots": bool(args.save_snapshots),
+        "snapshot_max_edge": max(96, int(args.snapshot_max_edge)),
+        "snapshot_jpeg_quality": max(30, min(95, int(args.snapshot_jpeg_quality))),
+        "snapshot_padding_ratio": DEFAULT_SNAPSHOT_PADDING_RATIO,
+        "detect_scale": CONFIG.detect_scale,
+        "enable_preprocessing": CONFIG.enable_preprocessing,
+    }
+
     camera = Camera(device_index=CONFIG.camera_index, width=CONFIG.cam_width, height=CONFIG.cam_height)
     tracker = HandTracker(max_num_hands=1)
-    recorder_suite = _build_recorder_suite()
-    preprocessor = Preprocessor(enable=cfg.enable_preprocessing)
+    preprocessor = Preprocessor(enable=CONFIG.enable_preprocessing)
     camera_thread: ThreadedCamera | None = None
-    discarded = False
-    save_requested = False
-    last_capture_t = 0.0
-    window_name = f"{CONFIG.app_name} - Record {cfg.gesture_label}"
-    artifacts = RecorderArtifacts()
-    runtime = RecorderRuntime(
-        state=RecorderState.STARTUP_HELP,
-        capture_mode=CaptureMode.AUTO,
-        help_visible_until=time.perf_counter() + 6.0,
-        started_at_monotonic=time.perf_counter(),
-    )
+    window_name = f"{CONFIG.app_name} - {'Batch Recorder' if batch_mode else 'Recorder'}"
+    saved_targets: list[str] = []
+    discarded_targets: list[str] = []
+    remaining_start_index = 0
+    stop_run = False
 
     try:
         camera.open()
@@ -1063,192 +1322,299 @@ def main() -> None:
         except Exception:
             pass
 
-        while True:
-            frame_raw, frame_seq, _ts, _ok = camera_thread.read_latest()
-            if frame_raw is None:
-                key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q"), ord("Q")):
-                    break
-                continue
+        for target_index, target_label in enumerate(targets):
+            if stop_run:
+                break
 
-            frame_disp = cv2.flip(frame_raw, 1) if cfg.mirror_view else frame_raw
-            now = time.perf_counter()
-            _advance_countdown(runtime, cfg, now)
-            small = cv2.resize(
-                frame_raw,
-                (0, 0),
-                fx=cfg.detect_scale,
-                fy=cfg.detect_scale,
-                interpolation=cv2.INTER_AREA,
+            session_id = _batch_session_id(base_session_id, target_index) if batch_mode else base_session_id
+            output_path = (
+                args.output
+                if args.output is not None and len(targets) == 1
+                else build_output_path(target_label, args.user_id, session_id)
             )
-            if cfg.enable_preprocessing:
-                small = preprocessor.apply(small)
-
-            detected_hand = tracker.detect(small)
-            suite_out = recorder_suite.detect(detected_hand)
-            guidance = _build_recorder_guidance(
-                target_label=cfg.gesture_label,
-                suite_out=suite_out,
-                require_label_match=cfg.require_label_match,
+            _ensure_output_path_available(output_path, overwrite=bool(args.overwrite))
+            cfg = RecorderConfig(
+                gesture_label=target_label,
+                session_id=session_id,
+                output_path=output_path,
+                **common_cfg_kwargs,
             )
-            quality_reason = "no_hand"
-            quality_ok = False
-            handedness = None
-            if detected_hand is not None:
-                quality = assess_hand_input_quality(detected_hand.landmarks)
-                quality_reason = quality.reason
-                quality_ok = quality.passed
-                handedness = detected_hand.handedness
-                draw_landmarks = _mirror_landmarks(detected_hand.landmarks) if cfg.mirror_view else detected_hand.landmarks
-                tracker.draw(frame_disp, draw_landmarks)
+            session = _make_session(cfg)
+            recorder_suite = _build_recorder_suite(cfg.gesture_label)
+            artifacts = RecorderArtifacts()
+            runtime = _make_runtime_for_target(
+                cfg.gesture_label,
+                show_help=(target_index == 0),
+                now=time.perf_counter(),
+            )
+            last_capture_t = 0.0
+            completed_current = False
+            remaining_start_index = target_index
+            print(f"[Recorder] Target {target_index + 1}/{len(targets)} -> {cfg.gesture_label}")
 
-                capture_gate_ok = quality_ok and guidance.capture_ready
-                capture_gate_reason = "ok" if capture_gate_ok else (quality_reason if not quality_ok else guidance.gate_reason)
+            while True:
+                frame_raw, frame_seq, _ts, _ok = camera_thread.read_latest()
+                if frame_raw is None:
+                    cv2.waitKey(1)
+                    continue
 
-                should_auto_capture = (
-                    runtime.state == RecorderState.RECORDING_AUTO
-                    and capture_gate_ok
-                    and (now - last_capture_t) >= cfg.sample_interval_s
+                frame_disp = cv2.flip(frame_raw, 1) if cfg.mirror_view else frame_raw
+                now = time.perf_counter()
+                _advance_countdown(runtime, cfg, now)
+                small = cv2.resize(
+                    frame_raw,
+                    (0, 0),
+                    fx=cfg.detect_scale,
+                    fy=cfg.detect_scale,
+                    interpolation=cv2.INTER_AREA,
                 )
-                if should_auto_capture:
-                    sample = _capture_sample(
-                        frame_seq=frame_seq,
-                        cfg=cfg,
-                        frame_bgr=frame_raw,
-                        detected_hand=detected_hand,
-                        session=session,
-                        artifacts=artifacts,
-                        guidance=guidance,
-                    )
-                    runtime.accepted_samples = len(session.samples)
-                    _set_last_result(runtime, f"Accepted sample #{sample.sample_index}", level="accept")
-                    last_capture_t = now
-                    if cfg.max_samples is not None and len(session.samples) >= cfg.max_samples:
-                        print(f"[Recorder] Reached max_samples={cfg.max_samples}.")
-                        _set_last_result(runtime, f"Target reached for {cfg.gesture_label}", level="accept")
-                        _update_state(runtime, RecorderState.PAUSED)
-                        _play_sound("target_reached", enabled=cfg.sound_enabled)
-                elif runtime.state == RecorderState.RECORDING_AUTO and not capture_gate_ok and (now - last_capture_t) >= cfg.sample_interval_s:
-                    _record_rejection(runtime, capture_gate_reason, sound_enabled=cfg.sound_enabled)
-                    last_capture_t = now
-            else:
+                if cfg.enable_preprocessing:
+                    small = preprocessor.apply(small)
+
+                detected_hand = tracker.detect(small)
+                suite_out = recorder_suite.detect(detected_hand)
                 guidance = _build_recorder_guidance(
                     target_label=cfg.gesture_label,
                     suite_out=suite_out,
                     require_label_match=cfg.require_label_match,
                 )
+                quality_reason = "no_hand"
+                quality_ok = False
+                handedness = None
+                if detected_hand is not None:
+                    quality = assess_hand_input_quality(detected_hand.landmarks)
+                    quality_reason = quality.reason
+                    quality_ok = quality.passed
+                    handedness = detected_hand.handedness
+                    draw_landmarks = _mirror_landmarks(detected_hand.landmarks) if cfg.mirror_view else detected_hand.landmarks
+                    tracker.draw(frame_disp, draw_landmarks)
 
-            _draw_overlay(
-                frame_disp,
-                cfg=cfg,
-                session=session,
-                runtime=runtime,
-                quality_reason=quality_reason if not quality_ok else guidance.gate_reason,
-                quality_ok=quality_ok and guidance.capture_ready,
-                handedness=handedness,
-                guidance=guidance,
-            )
-            cv2.imshow(window_name, frame_disp)
+                    capture_gate_ok = quality_ok and guidance.capture_ready
+                    capture_gate_reason = "ok" if capture_gate_ok else (quality_reason if not quality_ok else guidance.gate_reason)
 
-            key = cv2.waitKey(1) & 0xFF
-            if runtime.state == RecorderState.CONFIRM_SAVE:
-                if key in (ord("y"), ord("Y")):
-                    save_requested = bool(session.samples)
-                    if not session.samples:
-                        _set_last_result(runtime, "Quit confirmed without saving", level="info")
-                    break
-                if key in (ord("n"), ord("N")):
-                    _update_state(runtime, RecorderState.PAUSED)
-                    _set_last_result(runtime, "Save canceled; session resumed in paused state", level="info")
+                    should_auto_capture = (
+                        runtime.state == RecorderState.RECORDING_AUTO
+                        and capture_gate_ok
+                        and (now - last_capture_t) >= cfg.sample_interval_s
+                    )
+                    if should_auto_capture:
+                        sample = _capture_sample(
+                            frame_seq=frame_seq,
+                            cfg=cfg,
+                            frame_bgr=frame_raw,
+                            detected_hand=detected_hand,
+                            session=session,
+                            artifacts=artifacts,
+                            guidance=guidance,
+                        )
+                        runtime.accepted_samples = len(session.samples)
+                        _set_last_result(runtime, f"Accepted sample #{sample.sample_index}", level="accept")
+                        last_capture_t = now
+                        if cfg.max_samples is not None and len(session.samples) >= cfg.max_samples:
+                            print(f"[Recorder] Reached max_samples={cfg.max_samples}.")
+                            _set_last_result(runtime, f"Target reached for {cfg.gesture_label}", level="accept")
+                            _update_state(runtime, RecorderState.PAUSED)
+                            _play_sound("target_reached", enabled=cfg.sound_enabled)
+                    elif (
+                        runtime.state == RecorderState.RECORDING_AUTO
+                        and not capture_gate_ok
+                        and (now - last_capture_t) >= cfg.sample_interval_s
+                    ):
+                        _record_rejection(runtime, capture_gate_reason, sound_enabled=cfg.sound_enabled)
+                        last_capture_t = now
+
+                batch_progress = _batch_progress_text(targets, target_index) if batch_mode else None
+                batch_next_label = _next_target_label(targets, target_index) if batch_mode else None
+                _draw_overlay(
+                    frame_disp,
+                    cfg=cfg,
+                    session=session,
+                    runtime=runtime,
+                    quality_reason=quality_reason if not quality_ok else guidance.gate_reason,
+                    quality_ok=quality_ok and guidance.capture_ready,
+                    handedness=handedness,
+                    guidance=guidance,
+                    batch_progress=batch_progress,
+                    batch_next_label=batch_next_label,
+                )
+                cv2.imshow(window_name, frame_disp)
+
+                key = cv2.waitKey(1) & 0xFF
+                if runtime.state == RecorderState.CONFIRM_SAVE:
+                    if key in (ord("n"), ord("N")):
+                        _update_state(runtime, RecorderState.PAUSED)
+                        _set_last_result(runtime, "Save canceled; session resumed in paused state", level="info")
+                        continue
+                    if key in (ord("r"), ord("R")):
+                        session, artifacts = _retake_session(cfg, runtime, now=now)
+                        last_capture_t = 0.0
+                        _play_sound("discard", enabled=cfg.sound_enabled)
+                        continue
+                    if key in (ord("d"), ord("D")):
+                        _discard_session(session, artifacts)
+                        runtime.accepted_samples = 0
+                        _set_last_result(runtime, "Session discarded", level="info")
+                        _discard_session_and_report(cfg=cfg, session=session, runtime=runtime)
+                        discarded_targets.append(cfg.gesture_label)
+                        completed_current = True
+                        remaining_start_index = target_index + 1
+                        if not batch_mode or batch_next_label is None:
+                            stop_run = True
+                        break
+                    if key in (ord("y"), ord("Y")):
+                        if session.samples:
+                            _save_session_and_report(
+                                cfg=cfg,
+                                session=session,
+                                runtime=runtime,
+                                artifacts=artifacts,
+                            )
+                            saved_targets.append(cfg.gesture_label)
+                        else:
+                            _discard_session_and_report(cfg=cfg, session=session, runtime=runtime)
+                            discarded_targets.append(cfg.gesture_label)
+                        completed_current = True
+                        remaining_start_index = target_index + 1
+                        if not batch_mode or batch_next_label is None:
+                            stop_run = True
+                        break
+                    if key == 27 and batch_mode:
+                        if session.samples:
+                            _save_session_and_report(
+                                cfg=cfg,
+                                session=session,
+                                runtime=runtime,
+                                artifacts=artifacts,
+                            )
+                            saved_targets.append(cfg.gesture_label)
+                            completed_current = True
+                            remaining_start_index = target_index + 1
+                        else:
+                            _close_session_without_saving_and_report(cfg=cfg, session=session, runtime=runtime)
+                            remaining_start_index = target_index
+                        stop_run = True
+                        break
                     continue
-                if key in (ord("d"), ord("D")):
-                    discarded = True
+
+                if key in (27, ord("q"), ord("Q")):
+                    _update_state(runtime, RecorderState.CONFIRM_SAVE)
+                    if batch_mode:
+                        if session.samples:
+                            _set_last_result(
+                                runtime,
+                                "Review session summary, then press Y to save and continue or Esc to save and exit batch.",
+                                level="info",
+                            )
+                        else:
+                            _set_last_result(
+                                runtime,
+                                "No valid samples captured. Press Y to skip this label or Esc to exit batch.",
+                                level="info",
+                            )
+                    elif session.samples:
+                        _set_last_result(
+                            runtime,
+                            "Review session summary, then press Y to save, R to retake, or N to return",
+                            level="info",
+                        )
+                    else:
+                        _set_last_result(
+                            runtime,
+                            "No valid samples captured. Press Y to quit, R to retake, or N to continue",
+                            level="info",
+                        )
+                    continue
+                if key in (ord("m"), ord("M")):
+                    new_mode = _toggle_capture_mode(runtime)
+                    if new_mode == CaptureMode.MANUAL:
+                        _set_last_result(runtime, "Capture mode set to MANUAL. Press SPACE to arm, then C to capture.", level="info")
+                    else:
+                        _set_last_result(runtime, "Capture mode set to AUTO. Press SPACE to begin interval capture.", level="info")
+                    continue
+                if key == ord(" "):
+                    if runtime.state in (RecorderState.RECORDING_AUTO, RecorderState.RECORDING_MANUAL):
+                        _update_state(runtime, RecorderState.PAUSED)
+                        if runtime.capture_mode == CaptureMode.MANUAL:
+                            _set_last_result(runtime, "Manual mode paused", level="info")
+                        else:
+                            _set_last_result(runtime, "Auto capture paused", level="info")
+                    elif runtime.state == RecorderState.COUNTDOWN:
+                        _update_state(runtime, RecorderState.PAUSED)
+                        _set_last_result(runtime, "Countdown canceled", level="info")
+                    else:
+                        if runtime.capture_mode == CaptureMode.MANUAL:
+                            _update_state(runtime, RecorderState.RECORDING_MANUAL)
+                            _set_last_result(runtime, "Manual mode armed. Press C to capture approved samples.", level="info")
+                        elif cfg.countdown_seconds <= 0.0:
+                            _update_state(runtime, RecorderState.RECORDING_AUTO)
+                            _set_last_result(runtime, "Auto capture started", level="info")
+                            _play_sound("countdown_go", enabled=cfg.sound_enabled)
+                        else:
+                            _start_countdown(runtime, cfg, now)
+                    print(f"[Recorder] State={runtime.state.value}")
+                elif key in (ord("c"), ord("C")):
+                    if runtime.state == RecorderState.COUNTDOWN:
+                        _set_last_result(runtime, "Wait for countdown to finish before capturing", level="info")
+                    elif runtime.capture_mode == CaptureMode.MANUAL and runtime.state != RecorderState.RECORDING_MANUAL:
+                        _set_last_result(runtime, "Press SPACE to arm manual mode first", level="info")
+                    elif detected_hand is None:
+                        _record_rejection(runtime, "no_hand", sound_enabled=cfg.sound_enabled)
+                    elif not quality_ok:
+                        _record_rejection(runtime, quality_reason, sound_enabled=cfg.sound_enabled)
+                    elif not guidance.capture_ready:
+                        _record_rejection(runtime, guidance.gate_reason, sound_enabled=cfg.sound_enabled)
+                    else:
+                        sample = _capture_sample(
+                            frame_seq=frame_seq,
+                            cfg=cfg,
+                            frame_bgr=frame_raw,
+                            detected_hand=detected_hand,
+                            session=session,
+                            artifacts=artifacts,
+                            guidance=guidance,
+                        )
+                        runtime.accepted_samples = len(session.samples)
+                        _set_last_result(runtime, f"Accepted sample #{sample.sample_index}", level="accept")
+                        last_capture_t = time.perf_counter()
+                        print(f"[Recorder] Captured sample #{len(session.samples) - 1}")
+                elif key in (ord("u"), ord("U")) and session.samples:
+                    removed = _undo_last_sample(session, artifacts)
+                    if removed is not None:
+                        runtime.accepted_samples = len(session.samples)
+                        _set_last_result(runtime, f"Removed sample #{removed.sample_index}", level="info")
+                        print(f"[Recorder] Removed sample #{removed.sample_index}")
+                elif key in (ord("u"), ord("U")):
+                    _set_last_result(runtime, "Nothing to undo", level="info")
+                elif key in (ord("x"), ord("X")):
                     _discard_session(session, artifacts)
                     runtime.accepted_samples = 0
                     _set_last_result(runtime, "Session discarded", level="info")
-                    _play_sound("discard", enabled=cfg.sound_enabled)
+                    _discard_session_and_report(cfg=cfg, session=session, runtime=runtime)
+                    discarded_targets.append(cfg.gesture_label)
+                    completed_current = True
+                    remaining_start_index = target_index + 1
+                    if not batch_mode or batch_next_label is None:
+                        stop_run = True
                     break
-                continue
 
-            if key in (27, ord("q"), ord("Q")):
-                _update_state(runtime, RecorderState.CONFIRM_SAVE)
-                if session.samples:
-                    _set_last_result(runtime, "Review session summary, then press Y to save or N to return", level="info")
-                else:
-                    _set_last_result(runtime, "No valid samples captured. Press Y to quit or N to continue", level="info")
-                continue
-            if key in (ord("m"), ord("M")):
-                new_mode = _toggle_capture_mode(runtime)
-                if new_mode == CaptureMode.MANUAL:
-                    _set_last_result(runtime, "Capture mode set to MANUAL. Press SPACE to arm, then C to capture.", level="info")
-                else:
-                    _set_last_result(runtime, "Capture mode set to AUTO. Press SPACE to begin interval capture.", level="info")
-                continue
-            if key == ord(" "):
-                if runtime.state in (RecorderState.RECORDING_AUTO, RecorderState.RECORDING_MANUAL):
+                if runtime.state == RecorderState.STARTUP_HELP and time.perf_counter() > runtime.help_visible_until:
                     _update_state(runtime, RecorderState.PAUSED)
-                    if runtime.capture_mode == CaptureMode.MANUAL:
-                        _set_last_result(runtime, "Manual mode paused", level="info")
-                    else:
-                        _set_last_result(runtime, "Auto capture paused", level="info")
-                elif runtime.state == RecorderState.COUNTDOWN:
-                    _update_state(runtime, RecorderState.PAUSED)
-                    _set_last_result(runtime, "Countdown canceled", level="info")
-                else:
-                    if runtime.capture_mode == CaptureMode.MANUAL:
-                        _update_state(runtime, RecorderState.RECORDING_MANUAL)
-                        _set_last_result(runtime, "Manual mode armed. Press C to capture approved samples.", level="info")
-                    elif cfg.countdown_seconds <= 0.0:
-                        _update_state(runtime, RecorderState.RECORDING_AUTO)
-                        _set_last_result(runtime, "Auto capture started", level="info")
-                        _play_sound("countdown_go", enabled=cfg.sound_enabled)
-                    else:
-                        _start_countdown(runtime, cfg, now)
-                print(f"[Recorder] State={runtime.state.value}")
-            elif key in (ord("c"), ord("C")):
-                if runtime.state == RecorderState.COUNTDOWN:
-                    _set_last_result(runtime, "Wait for countdown to finish before capturing", level="info")
-                elif runtime.capture_mode == CaptureMode.MANUAL and runtime.state != RecorderState.RECORDING_MANUAL:
-                    _set_last_result(runtime, "Press SPACE to arm manual mode first", level="info")
-                elif detected_hand is None:
-                    _record_rejection(runtime, "no_hand", sound_enabled=cfg.sound_enabled)
-                elif not quality_ok:
-                    _record_rejection(runtime, quality_reason, sound_enabled=cfg.sound_enabled)
-                elif not guidance.capture_ready:
-                    _record_rejection(runtime, guidance.gate_reason, sound_enabled=cfg.sound_enabled)
-                else:
-                    sample = _capture_sample(
-                        frame_seq=frame_seq,
-                        cfg=cfg,
-                        frame_bgr=frame_raw,
-                        detected_hand=detected_hand,
-                        session=session,
-                        artifacts=artifacts,
-                        guidance=guidance,
-                    )
-                    runtime.accepted_samples = len(session.samples)
-                    _set_last_result(runtime, f"Accepted sample #{sample.sample_index}", level="accept")
-                    last_capture_t = time.perf_counter()
-                    print(f"[Recorder] Captured sample #{len(session.samples) - 1}")
-            elif key in (ord("u"), ord("U")) and session.samples:
-                removed = _undo_last_sample(session, artifacts)
-                if removed is not None:
-                    runtime.accepted_samples = len(session.samples)
-                    _set_last_result(runtime, f"Removed sample #{removed.sample_index}", level="info")
-                    print(f"[Recorder] Removed sample #{removed.sample_index}")
-            elif key in (ord("u"), ord("U")):
-                _set_last_result(runtime, "Nothing to undo", level="info")
-            elif key in (ord("x"), ord("X")):
-                discarded = True
-                _discard_session(session, artifacts)
-                runtime.accepted_samples = 0
-                _set_last_result(runtime, "Session discarded", level="info")
-                _play_sound("discard", enabled=cfg.sound_enabled)
-                print("[Recorder] Session discarded by user.")
+
+            if stop_run and not completed_current:
+                remaining_start_index = target_index
                 break
 
-            if runtime.state == RecorderState.STARTUP_HELP and time.perf_counter() > runtime.help_visible_until:
-                _update_state(runtime, RecorderState.PAUSED)
+        if batch_mode:
+            remaining_targets = list(targets[remaining_start_index:])
+            print(
+                f"[Recorder] Batch complete | saved={len(saved_targets)} | discarded={len(discarded_targets)} | remaining={len(remaining_targets)}"
+            )
+            if saved_targets:
+                print(f"[Recorder] Saved labels: {', '.join(saved_targets)}")
+            if discarded_targets:
+                print(f"[Recorder] Discarded labels: {', '.join(discarded_targets)}")
+            if remaining_targets:
+                print(f"[Recorder] Remaining labels: {', '.join(remaining_targets)}")
 
     finally:
         if camera_thread is not None:
@@ -1256,54 +1622,6 @@ def main() -> None:
         tracker.close()
         camera.release()
         cv2.destroyAllWindows()
-
-    if discarded:
-        sync_status = _sync_tracker_row(
-            cfg=cfg,
-            session=session,
-            runtime=runtime,
-            discarded=True,
-            saved=False,
-        )
-        print(f"[Recorder] Tracker sync: {sync_status}")
-        return
-
-    if not save_requested:
-        sync_status = _sync_tracker_row(
-            cfg=cfg,
-            session=session,
-            runtime=runtime,
-            discarded=False,
-            saved=False,
-        )
-        print(f"[Recorder] Tracker sync: {sync_status}")
-        print("[Recorder] Session closed without saving.")
-        return
-
-    if not session.samples:
-        sync_status = _sync_tracker_row(
-            cfg=cfg,
-            session=session,
-            runtime=runtime,
-            discarded=True,
-            saved=False,
-        )
-        print(f"[Recorder] Tracker sync: {sync_status}")
-        _play_sound("discard", enabled=cfg.sound_enabled)
-        print("[Recorder] No samples captured. Nothing saved.")
-        return
-
-    save_session(session, cfg.output_path, cfg=cfg, artifacts=artifacts)
-    sync_status = _sync_tracker_row(
-        cfg=cfg,
-        session=session,
-        runtime=runtime,
-        discarded=False,
-        saved=True,
-    )
-    _play_sound("save", enabled=cfg.sound_enabled)
-    print(f"[Recorder] Tracker sync: {sync_status}")
-    print(f"[Recorder] Saved {len(session.samples)} samples to {cfg.output_path}")
 
 
 if __name__ == "__main__":

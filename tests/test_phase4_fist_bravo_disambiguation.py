@@ -65,6 +65,19 @@ def _side_folded_bravo_hand():
     )
 
 
+def _bravo_with_pinky_leak():
+    return _make_points(
+        [
+            (0.50, 0.62, 0.00),
+            (0.46, 0.58, 0.00), (0.46, 0.48, 0.00), (0.46, 0.34, 0.00), (0.46, 0.14, 0.00),
+            (0.58, 0.50, 0.00), (0.57, 0.54, 0.00), (0.56, 0.57, 0.00), (0.55, 0.61, 0.00),
+            (0.54, 0.49, 0.00), (0.53, 0.53, 0.00), (0.52, 0.57, 0.00), (0.51, 0.61, 0.00),
+            (0.50, 0.49, 0.00), (0.49, 0.53, 0.00), (0.48, 0.57, 0.00), (0.47, 0.61, 0.00),
+            (0.46, 0.50, 0.00), (0.49, 0.52, 0.00), (0.50, 0.52, 0.00), (0.42, 0.52, 0.00),
+        ]
+    )
+
+
 class FistBravoDisambiguationTests(unittest.TestCase):
     def test_clear_bravo_pose_stays_bravo(self):
         hand = _clear_bravo_hand()
@@ -89,9 +102,18 @@ class FistBravoDisambiguationTests(unittest.TestCase):
         self.assertFalse(detect_bravo(hand))
         self.assertEqual(legacy_detect_bravo(hand), detect_bravo(hand))
 
+    def test_bravo_rejects_visible_pinky_leak(self):
+        hand = _bravo_with_pinky_leak()
+        self.assertFalse(detect_bravo(hand))
+        self.assertEqual(legacy_detect_bravo(hand), detect_bravo(hand))
+
     def test_registry_prefers_fist_for_relaxed_thumb_closure(self):
         snapshot = GestureRegistry().detect(_fist_with_relaxed_thumb())
         self.assertTrue(snapshot.fist)
+        self.assertFalse(snapshot.bravo)
+
+    def test_registry_rejects_bravo_when_pinky_is_visibly_out(self):
+        snapshot = GestureRegistry().detect(_bravo_with_pinky_leak())
         self.assertFalse(snapshot.bravo)
 
 

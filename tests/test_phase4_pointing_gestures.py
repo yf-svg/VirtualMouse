@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from app.gestures.hand_gestures import HandGestures
 from app.gestures.pointing import PointingDetector, PointingCfg, detect_point_left, detect_point_right
-from app.gestures.registry import GestureSnapshot
+from app.gestures.registry import GestureRegistry, GestureSnapshot
 from app.gestures.rules import snapshot_to_candidates
 
 
@@ -69,6 +69,97 @@ def _display_point_right_back_facing():
     return hand
 
 
+def _clean_l_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.44, 0.66, 0.00), (0.38, 0.66, 0.00), (0.30, 0.66, 0.00), (0.20, 0.66, 0.00),
+            (0.56, 0.56, 0.00), (0.56, 0.45, 0.00), (0.56, 0.33, 0.00), (0.56, 0.20, 0.00),
+            (0.60, 0.58, 0.00), (0.59, 0.64, 0.00), (0.58, 0.68, 0.00), (0.57, 0.71, 0.00),
+            (0.64, 0.60, 0.00), (0.63, 0.66, 0.00), (0.62, 0.70, 0.00), (0.61, 0.73, 0.00),
+            (0.68, 0.62, 0.00), (0.67, 0.67, 0.00), (0.66, 0.71, 0.00), (0.65, 0.74, 0.00),
+        ]
+    )
+
+
+def _clean_one_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.52, 0.69, 0.00), (0.54, 0.70, 0.00), (0.56, 0.71, 0.00), (0.60, 0.68, 0.00),
+            (0.56, 0.56, 0.00), (0.56, 0.45, 0.00), (0.56, 0.33, 0.00), (0.56, 0.20, 0.00),
+            (0.60, 0.58, 0.00), (0.59, 0.64, 0.00), (0.58, 0.68, 0.00), (0.57, 0.71, 0.00),
+            (0.64, 0.60, 0.00), (0.63, 0.66, 0.00), (0.62, 0.70, 0.00), (0.61, 0.73, 0.00),
+            (0.68, 0.62, 0.00), (0.67, 0.67, 0.00), (0.66, 0.71, 0.00), (0.65, 0.74, 0.00),
+        ]
+    )
+
+
+def _horizontal_one_like_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.47, 0.68, 0.00), (0.48, 0.66, 0.00), (0.49, 0.64, 0.00), (0.50, 0.62, 0.00),
+            (0.56, 0.50, 0.00), (0.64, 0.46, 0.00), (0.70, 0.40, 0.00), (0.76, 0.44, 0.00),
+            (0.60, 0.58, 0.00), (0.59, 0.64, 0.00), (0.58, 0.68, 0.00), (0.57, 0.71, 0.00),
+            (0.64, 0.60, 0.00), (0.63, 0.66, 0.00), (0.62, 0.70, 0.00), (0.61, 0.73, 0.00),
+            (0.68, 0.62, 0.00), (0.67, 0.67, 0.00), (0.66, 0.71, 0.00), (0.65, 0.74, 0.00),
+        ]
+    )
+
+
+def _side_profile_one_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.52, 0.69, 0.00), (0.54, 0.70, 0.00), (0.56, 0.71, 0.00), (0.60, 0.68, 0.00),
+            (0.56, 0.56, 0.00), (0.63, 0.50, 0.00), (0.70, 0.45, 0.00), (0.76, 0.40, 0.00),
+            (0.60, 0.58, 0.00), (0.59, 0.64, 0.00), (0.58, 0.68, 0.00), (0.57, 0.71, 0.00),
+            (0.64, 0.60, 0.00), (0.63, 0.66, 0.00), (0.62, 0.70, 0.00), (0.61, 0.73, 0.00),
+            (0.68, 0.62, 0.00), (0.67, 0.67, 0.00), (0.66, 0.71, 0.00), (0.65, 0.74, 0.00),
+        ]
+    )
+
+
+def _clean_three_imr_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.50, 0.68, 0.00), (0.51, 0.67, 0.00), (0.52, 0.66, 0.00), (0.53, 0.65, 0.00),
+            (0.56, 0.56, 0.00), (0.56, 0.45, 0.00), (0.56, 0.33, 0.00), (0.56, 0.20, 0.00),
+            (0.60, 0.58, 0.00), (0.60, 0.47, 0.00), (0.60, 0.35, 0.00), (0.60, 0.22, 0.00),
+            (0.64, 0.60, 0.00), (0.64, 0.49, 0.00), (0.64, 0.37, 0.00), (0.64, 0.25, 0.00),
+            (0.68, 0.62, 0.00), (0.67, 0.67, 0.00), (0.66, 0.71, 0.00), (0.65, 0.74, 0.00),
+        ]
+    )
+
+
+def _clean_three_imp_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.50, 0.68, 0.00), (0.51, 0.67, 0.00), (0.52, 0.66, 0.00), (0.53, 0.65, 0.00),
+            (0.56, 0.56, 0.00), (0.56, 0.45, 0.00), (0.56, 0.33, 0.00), (0.56, 0.20, 0.00),
+            (0.60, 0.58, 0.00), (0.60, 0.47, 0.00), (0.60, 0.35, 0.00), (0.60, 0.22, 0.00),
+            (0.64, 0.60, 0.00), (0.63, 0.66, 0.00), (0.62, 0.70, 0.00), (0.61, 0.73, 0.00),
+            (0.68, 0.62, 0.00), (0.68, 0.51, 0.00), (0.68, 0.39, 0.00), (0.68, 0.27, 0.00),
+        ]
+    )
+
+
+def _three_mrp_hand():
+    return _make_points(
+        [
+            (0.50, 0.70, 0.00),
+            (0.50, 0.68, 0.00), (0.51, 0.67, 0.00), (0.52, 0.66, 0.00), (0.53, 0.65, 0.00),
+            (0.56, 0.58, 0.00), (0.57, 0.64, 0.00), (0.58, 0.68, 0.00), (0.59, 0.71, 0.00),
+            (0.60, 0.58, 0.00), (0.60, 0.47, 0.00), (0.60, 0.35, 0.00), (0.60, 0.22, 0.00),
+            (0.64, 0.60, 0.00), (0.64, 0.49, 0.00), (0.64, 0.37, 0.00), (0.64, 0.25, 0.00),
+            (0.68, 0.62, 0.00), (0.68, 0.51, 0.00), (0.68, 0.39, 0.00), (0.68, 0.27, 0.00),
+        ]
+    )
+
+
 class PointingGestureTests(unittest.TestCase):
     def test_detect_point_right_uses_mirrored_display_semantics(self):
         hand = _display_point_right_hand()
@@ -87,6 +178,48 @@ class PointingGestureTests(unittest.TestCase):
 
     def test_pointing_pose_requires_compact_thumb_to_avoid_l_overlap(self):
         self.assertFalse(detect_point_right(_display_point_right_with_l_thumb()))
+
+    def test_l_pose_does_not_read_as_number_one(self):
+        hand = HandGestures()
+        pose = _clean_l_hand()
+        self.assertTrue(hand.detect_L(pose))
+        self.assertIsNone(hand.detect_numbers_1_to_5(pose))
+
+    def test_compact_thumb_one_still_reads_as_one(self):
+        hand = HandGestures()
+        pose = _clean_one_hand()
+        self.assertFalse(hand.detect_L(pose))
+        self.assertEqual(hand.detect_numbers_1_to_5(pose), "ONE")
+
+    def test_horizontal_index_pose_does_not_read_as_number_one(self):
+        hand = HandGestures()
+        pose = _horizontal_one_like_hand()
+        self.assertIsNone(hand.detect_numbers_1_to_5(pose))
+
+    def test_side_profile_one_still_reads_as_one(self):
+        hand = HandGestures()
+        pose = _side_profile_one_hand()
+        self.assertFalse(hand.detect_L(pose))
+        self.assertEqual(hand.detect_numbers_1_to_5(pose), "ONE")
+
+    def test_three_accepts_index_middle_ring_combo(self):
+        hand = HandGestures()
+        self.assertEqual(hand.detect_numbers_1_to_5(_clean_three_imr_hand()), "THREE")
+
+    def test_three_accepts_index_middle_pinky_combo(self):
+        hand = HandGestures()
+        self.assertEqual(hand.detect_numbers_1_to_5(_clean_three_imp_hand()), "THREE")
+
+    def test_three_rejects_middle_ring_pinky_combo(self):
+        hand = HandGestures()
+        self.assertIsNone(hand.detect_numbers_1_to_5(_three_mrp_hand()))
+
+    def test_registry_surfaces_l_without_one_overlap(self):
+        snapshot = GestureRegistry().detect(_clean_l_hand())
+        self.assertTrue(snapshot.l_gesture)
+        self.assertIsNone(snapshot.number)
+        self.assertIn("L", snapshot_to_candidates(snapshot))
+        self.assertNotIn("ONE", snapshot_to_candidates(snapshot))
 
     def test_unclear_orientation_can_pass_when_pointer_shape_is_clean(self):
         hand = _display_point_right_hand()

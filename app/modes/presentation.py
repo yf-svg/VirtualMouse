@@ -24,7 +24,6 @@ PRESENTATION_PLAYBACK_BINDINGS: Mapping[str, PresentationActionBinding] = {
     "POINT_RIGHT": PresentationActionBinding("PRESENT_NEXT", "navigation"),
     "POINT_LEFT": PresentationActionBinding("PRESENT_PREV", "navigation"),
     "OPEN_PALM": PresentationActionBinding("PRESENT_START", "start"),
-    "PEACE_SIGN": PresentationActionBinding("PRESENT_EXIT", "exit"),
 }
 
 PRESENTATION_PLAYBACK_GESTURES = frozenset(PRESENTATION_PLAYBACK_BINDINGS)
@@ -117,6 +116,41 @@ def resolve_presentation_action(
     )
 
 
+def build_presentation_exit_action(
+    *,
+    context: PresentationContext,
+    gesture_label: str = "THUMBS_DOWN",
+) -> PresentationModeOut:
+    if not context.allowed or not context.confident:
+        return PresentationModeOut(
+            intent=no_action(
+                reason=f"context_not_allowed:{context.reason}",
+                gesture_label=gesture_label,
+                mode="PRESENTATION",
+            ),
+            context=context,
+        )
+    if not context.supports_exit:
+        return PresentationModeOut(
+            intent=no_action(
+                reason=f"presentation_exit_blocked:{context.reason}",
+                gesture_label=gesture_label,
+                mode="PRESENTATION",
+            ),
+            context=context,
+        )
+    return PresentationModeOut(
+        intent=ActionIntent(
+            action_name="PRESENT_EXIT",
+            gesture_label=gesture_label,
+            executable=False,
+            reason="dry_run_only",
+            mode="PRESENTATION",
+        ),
+        context=context,
+    )
+
+
 def map_gesture_to_action(gesture_label: str | None) -> ActionIntent:
     return resolve_presentation_action(
         gesture_label=gesture_label,
@@ -126,6 +160,8 @@ def map_gesture_to_action(gesture_label: str | None) -> ActionIntent:
             kind=PresentationAppKind.NONE,
             process_name=None,
             window_title=None,
+            window_rect=None,
+            screen_size=None,
             fullscreen_like=False,
             navigation_allowed=False,
             supports_start=False,

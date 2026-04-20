@@ -8,6 +8,7 @@ from app.modes.presentation import PRESENTATION_PLAYBACK_BINDINGS
 
 if TYPE_CHECKING:
     from app.gestures.suite import GestureSuiteOut
+    from app.modes.presentation_tools import PresentationToolOut
 
 
 @dataclass(frozen=True)
@@ -126,3 +127,25 @@ class PresentationGestureInterpreter:
         if binding.capability == "navigation":
             return max(1, int(self.cfg.navigation_confirm_frames))
         return max(1, int(self.cfg.session_control_confirm_frames))
+
+
+def update_presentation_playback_signal(
+    *,
+    interpreter: PresentationGestureInterpreter,
+    suite_out: GestureSuiteOut | None,
+    hand_present: bool,
+    tool_out: PresentationToolOut,
+) -> PresentationGestureSignal:
+    if tool_out.owns_presentation:
+        interpreter.reset()
+        return PresentationGestureSignal(
+            gesture_label=None,
+            event_label=None,
+            active_frames=0,
+            threshold_frames=None,
+            reason=f"tool_owned:{tool_out.state.value.lower()}",
+        )
+    return interpreter.update(
+        suite_out=suite_out,
+        hand_present=hand_present,
+    )

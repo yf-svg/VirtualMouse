@@ -34,6 +34,8 @@ class PresentationContext:
     kind: PresentationAppKind
     process_name: str | None
     window_title: str | None
+    window_rect: tuple[int, int, int, int] | None
+    screen_size: tuple[int, int] | None
     fullscreen_like: bool
     navigation_allowed: bool
     supports_start: bool
@@ -164,6 +166,8 @@ class WindowWatch:
                 kind=PresentationAppKind.POWERPOINT if self._forced_allowed else PresentationAppKind.NONE,
                 process_name=None,
                 window_title=None,
+                window_rect=None,
+                screen_size=None,
                 fullscreen_like=False,
                 navigation_allowed=bool(self._forced_allowed),
                 supports_start=bool(self._forced_allowed),
@@ -191,6 +195,8 @@ class WindowWatch:
                 kind=PresentationAppKind.NONE,
                 process_name=snapshot.process_name,
                 window_title=snapshot.window_title,
+                window_rect=snapshot.window_rect,
+                screen_size=snapshot.screen_size,
                 fullscreen_like=False,
                 navigation_allowed=False,
                 supports_start=False,
@@ -209,6 +215,8 @@ class WindowWatch:
                 kind=PresentationAppKind.POWERPOINT,
                 process_name=process_name,
                 window_title=snapshot.window_title,
+                window_rect=snapshot.window_rect,
+                screen_size=snapshot.screen_size,
                 fullscreen_like=fullscreen_like,
                 navigation_allowed=fullscreen_like,
                 supports_start=True,
@@ -225,6 +233,8 @@ class WindowWatch:
                     kind=PresentationAppKind.UNSUPPORTED,
                     process_name=process_name,
                     window_title=snapshot.window_title,
+                    window_rect=snapshot.window_rect,
+                    screen_size=snapshot.screen_size,
                     fullscreen_like=fullscreen_like,
                     navigation_allowed=False,
                     supports_start=False,
@@ -237,6 +247,8 @@ class WindowWatch:
                 kind=PresentationAppKind.BROWSER_PRESENTATION,
                 process_name=process_name,
                 window_title=snapshot.window_title,
+                window_rect=snapshot.window_rect,
+                screen_size=snapshot.screen_size,
                 fullscreen_like=fullscreen_like,
                 navigation_allowed=fullscreen_like,
                 supports_start=True,
@@ -251,6 +263,8 @@ class WindowWatch:
                 kind=PresentationAppKind.PDF_VIEWER,
                 process_name=process_name,
                 window_title=snapshot.window_title,
+                window_rect=snapshot.window_rect,
+                screen_size=snapshot.screen_size,
                 fullscreen_like=fullscreen_like,
                 navigation_allowed=True,
                 supports_start=False,
@@ -264,6 +278,8 @@ class WindowWatch:
             kind=PresentationAppKind.UNSUPPORTED,
             process_name=process_name or None,
             window_title=snapshot.window_title,
+            window_rect=snapshot.window_rect,
+            screen_size=snapshot.screen_size,
             fullscreen_like=fullscreen_like,
             navigation_allowed=False,
             supports_start=False,

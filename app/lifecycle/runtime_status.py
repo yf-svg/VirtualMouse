@@ -19,6 +19,27 @@ def _format_presentation_context(context: PresentationContext) -> str:
     return f"PCTX:{context.summary()}"
 
 
+def _format_presentation_tools(tool_out) -> str:
+    return tool_out.status_text()
+
+
+def _format_presentation_tool_execution(report) -> str:
+    if report.visible and report.laser_point is not None:
+        prefix = f"TOOLEX:{report.reason}"
+        if getattr(report, "stroke_count", 0):
+            prefix += f":S{report.stroke_count}"
+        return f"{prefix}@{report.laser_point.x},{report.laser_point.y}"
+    if report.visible and getattr(report, "draw_point", None) is not None:
+        prefix = f"TOOLEX:{report.reason}"
+        if getattr(report, "stroke_count", 0):
+            prefix += f":S{report.stroke_count}"
+        point = report.draw_point
+        return f"{prefix}@{point.x},{point.y}"
+    if getattr(report, "stroke_count", 0):
+        return f"TOOLEX:{report.reason}:S{report.stroke_count}"
+    return f"TOOLEX:{report.reason}"
+
+
 def _format_mode_status(state: AppState, *, route_summary: str | None = None) -> str:
     if state == AppState.ACTIVE_PRESENTATION:
         if route_summary and route_summary.startswith("force_presentation:"):

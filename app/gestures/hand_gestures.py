@@ -112,6 +112,7 @@ class GestureCfg:
 
     # L gesture perpendicular check
     l_perp_cos_max: float = 0.45
+    one_min_vertical_dominance_ratio: float = 0.65
 
 class HandGestures:
     def __init__(self, cfg: GestureCfg = GestureCfg()):
@@ -442,7 +443,14 @@ class HandGestures:
           - ONE..FOUR are based ONLY on index/middle/ring/pinky:
               count of extended among those 4
               AND all other non-thumb fingers must be curled
-          - thumb is ignored for numbers
+          - thumb is ignored for TWO..FOUR
+          - ONE is suppressed when the thumb is clearly extended so L does not
+            collapse into the auth digit
+          - ONE also requires a sufficiently upward index finger so nearly
+            horizontal pointing poses do not collapse into the auth digit,
+            while side-palm auth-style ONE poses can still pass
+          - THREE is restricted to the cleaner IMR or IMP combinations so
+            middle-pinch and loose ring/pinky variants do not collapse into THREE
         """
         lm = self._lm(landmarks)
 
@@ -450,6 +458,7 @@ class HandGestures:
             return "FIVE"
         if self.detect_peace_sign(landmarks) or self.detect_shaka(landmarks):
             return None
+        thumb_extended = self.thumb_extended(lm)
 
         ext_i = self._finger_raised(lm, INDEX_TIP, INDEX_PIP, INDEX_MCP)
         ext_m = self._finger_raised(lm, MIDDLE_TIP, MIDDLE_PIP, MIDDLE_MCP)
@@ -463,6 +472,11 @@ class HandGestures:
 
         ext = [ext_i, ext_m, ext_r, ext_p]
         n = sum(1 for v in ext if v)
+        three_combo_ok = ext_i and ext_m and (ext_r != ext_p)
+
+        index_dx = abs(lm[INDEX_TIP].x - lm[INDEX_MCP].x)
+        index_dy = abs(lm[INDEX_TIP].y - lm[INDEX_MCP].y)
+        one_vertical_enough = index_dy >= (self.cfg.one_min_vertical_dominance_ratio * index_dx)
 
         # Require that the NOT-extended fingers are curled (clean digit)
         def others_curled_ok() -> bool:
@@ -478,6 +492,10 @@ class HandGestures:
             return ok
 
         if n in (1, 2, 3, 4) and others_curled_ok():
+            if n == 1 and (thumb_extended or not one_vertical_enough):
+                return None
+            if n == 3 and not three_combo_ok:
+                return None
             return {1: "ONE", 2: "TWO", 3: "THREE", 4: "FOUR"}[n]
 
         return None

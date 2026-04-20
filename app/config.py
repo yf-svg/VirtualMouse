@@ -108,6 +108,72 @@ class PresentationRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class PresentationToolConfig:
+    enable_live_presentation_tools: bool = True
+    pointer_anchor_mode: str = "index_tip"
+    pointer_edge_blend_margin: float = 0.14
+    pointer_edge_blend_max_pull: float = 0.24
+    pointer_input_x_min: float = 0.0
+    pointer_input_x_max: float = 1.0
+    pointer_input_y_min: float = 0.0
+    pointer_input_y_max: float = 0.76
+    laser_toggle_confirm_frames: int = 2
+    laser_hold_last_frames: int = 3
+    draw_toggle_confirm_frames: int = 2
+    draw_activation_confirm_frames: int = 1
+    draw_undo_min_ms: int = 60
+    draw_undo_max_ms: int = 650
+    draw_undo_min_detected_frames: int = 1
+    draw_clear_hold_ms: int = 800
+    draw_clear_confirm_frames: int = 3
+    draw_clear_feedback_frames: int = 6
+    draw_release_grace_frames: int = 2
+    panel_pointer_smoothing_alpha: float = 0.22
+    panel_pointer_slow_alpha: float = 0.22
+    panel_pointer_slow_scale: float = 0.48
+    panel_pointer_history_size: int = 6
+    panel_select_confirm_frames: int = 2
+    panel_toggle_confirm_frames: int = 2
+    panel_min_open_ms: int = 5000
+    panel_leave_grace_frames: int = 6
+    panel_leave_padding: float = 0.022
+    panel_slow_padding: float = 0.018
+    laser_smoothing_alpha: float = 1.0
+    laser_smoothing_alpha_min: float = 0.38
+    laser_smoothing_alpha_max: float = 0.88
+    laser_speed_low: float = 0.006
+    laser_speed_high: float = 0.040
+    laser_history_size: int = 6
+    draw_smoothing_alpha: float = 0.42
+    draw_hold_last_frames: int = 3
+    draw_idle_history_size: int = 4
+    draw_stroke_smoothing_alpha_min: float = 0.68
+    draw_stroke_smoothing_alpha_max: float = 0.94
+    draw_stroke_speed_low: float = 0.006
+    draw_stroke_speed_high: float = 0.040
+    draw_stroke_history_size: int = 4
+    stroke_curve_subdivisions: int = 5
+    stroke_min_point_delta_px: int = 2
+    default_draw_color_key: str = "gold"
+    default_draw_pen_key: str = "marker"
+    default_draw_size_key: str = "10"
+    panel_margin_right: float = 0.016
+    panel_top_y: float = 0.10
+    panel_width: float = 0.155
+    panel_height: float = 0.72
+    panel_anchor_x: float = 0.976
+    panel_anchor_y: float = 0.948
+    panel_reveal_radius: float = 0.045
+    panel_idle_radius: float = 0.028
+    panel_activation_radius: float = 0.185
+    panel_dismiss_radius: float = 0.235
+    panel_slow_zone_radius: float = 0.20
+    panel_block_radius: float = 0.14
+    panel_item_hit_radius: float = 0.045
+    panel_animation_lerp: float = 0.28
+
+
+@dataclass(frozen=True)
 class RuntimeDebugConfig:
     pipeline_trace: bool = True
 
@@ -153,6 +219,7 @@ class AppConfig:
     operator_override: OperatorOverrideConfig = field(default_factory=OperatorOverrideConfig)
     presentation_context: PresentationContextConfig = field(default_factory=PresentationContextConfig)
     presentation_runtime: PresentationRuntimeConfig = field(default_factory=PresentationRuntimeConfig)
+    presentation_tools: PresentationToolConfig = field(default_factory=PresentationToolConfig)
     runtime_debug: RuntimeDebugConfig = field(default_factory=RuntimeDebugConfig)
 
 

@@ -19,17 +19,28 @@ from tools.record_gestures import (
     RecorderState,
     RecordingSample,
     RecordingSession,
+    _batch_progress_text,
+    _batch_session_id,
     _build_recorder_guidance,
     _build_session_summary,
+    _default_capture_mode_for_label,
     _ensure_output_path_available,
+    _labels_for_batch_scope,
     _advance_countdown,
     _countdown_remaining,
     _format_duration,
     _handedness_summary,
+    _make_runtime_for_target,
     _humanize_quality_reason,
     _maybe_validate_readiness,
+    _normalize_recording_label,
+    _priority_for_recording_target,
+    _preferred_batch_label,
+    _recording_target_variants,
     _progress_text,
     _record_rejection,
+    _retake_session,
+    _resolve_recording_targets,
     _sound_asset_path,
     _start_countdown,
     _set_last_result,
@@ -47,6 +58,77 @@ from tools.record_gestures import (
 
 
 class RecordGesturesToolTests(unittest.TestCase):
+    def test_priority_for_recording_target_promotes_requested_label(self):
+        open_palm_priority = _priority_for_recording_target("OPEN_PALM")
+        five_priority = _priority_for_recording_target("FIVE")
+        peace_priority = _priority_for_recording_target("PEACE_SIGN")
+        two_priority = _priority_for_recording_target("TWO")
+
+        self.assertEqual(open_palm_priority[0], "OPEN_PALM")
+        self.assertLess(open_palm_priority.index("OPEN_PALM"), open_palm_priority.index("FIVE"))
+        self.assertEqual(five_priority[0], "FIVE")
+        self.assertLess(five_priority.index("FIVE"), five_priority.index("OPEN_PALM"))
+        self.assertEqual(peace_priority[0], "PEACE_SIGN")
+        self.assertLess(peace_priority.index("PEACE_SIGN"), peace_priority.index("TWO"))
+        self.assertEqual(two_priority[0], "TWO")
+        self.assertLess(two_priority.index("TWO"), two_priority.index("PEACE_SIGN"))
+
+    def test_recording_target_variants_include_collection_equivalents(self):
+        self.assertEqual(_recording_target_variants("PEACE_SIGN"), ("PEACE_SIGN", "TWO"))
+        self.assertEqual(_recording_target_variants("OPEN_PALM"), ("OPEN_PALM", "FIVE"))
+        self.assertEqual(_recording_target_variants("THREE"), ("THREE", "PINCH_PINKY"))
+        self.assertEqual(_recording_target_variants("BRAVO"), ("BRAVO",))
+
+    def test_labels_for_batch_scope_uses_canonical_orders(self):
+        self.assertEqual(_labels_for_batch_scope("auth")[:3], ("FIST", "CLOSED_PALM", "BRAVO"))
+        self.assertEqual(_labels_for_batch_scope("ops")[:3], ("PINCH_IMRP", "PINCH_IM", "PINCH_INDEX"))
+        self.assertEqual(_labels_for_batch_scope("unified")[:3], ("FIST", "CLOSED_PALM", "BRAVO"))
+        self.assertNotIn("TWO", _labels_for_batch_scope("unified"))
+        self.assertNotIn("FIVE", _labels_for_batch_scope("unified"))
+        self.assertNotIn("PINCH_PINKY", _labels_for_batch_scope("unified"))
+        self.assertIn("PEACE_SIGN", _labels_for_batch_scope("unified"))
+        self.assertIn("OPEN_PALM", _labels_for_batch_scope("unified"))
+        self.assertIn("THREE", _labels_for_batch_scope("unified"))
+
+    def test_resolve_recording_targets_supports_batch_scope_and_resume_label(self):
+        targets = _resolve_recording_targets(
+            gesture_label=None,
+            batch_scope="unified",
+            batch_labels=[],
+            start_at_label="TWO",
+        )
+        self.assertEqual(targets[0], "PEACE_SIGN")
+        self.assertNotIn("FIST", targets)
+
+        custom = _resolve_recording_targets(
+            gesture_label=None,
+            batch_scope=None,
+            batch_labels=["FIST", "TWO", "PEACE_SIGN", "FIVE", "PINCH_PINKY", "PINCH_INDEX"],
+            start_at_label=None,
+        )
+        self.assertEqual(custom, ("FIST", "PEACE_SIGN", "OPEN_PALM", "THREE", "PINCH_INDEX"))
+
+    def test_batch_helpers_report_progress_and_capture_mode(self):
+        self.assertEqual(_batch_session_id("phase4_u01", 0), "phase4_u01_001")
+        self.assertEqual(_batch_progress_text(("FIST", "BRAVO", "L"), 1), "2/3 | Next: L")
+        self.assertEqual(_batch_progress_text(("FIST",), 0), "1/1 | Next: FINISH")
+        self.assertEqual(_default_capture_mode_for_label("PINCH_INDEX"), CaptureMode.MANUAL)
+        self.assertEqual(_default_capture_mode_for_label("FIST"), CaptureMode.AUTO)
+        self.assertEqual(_preferred_batch_label("TWO"), "PEACE_SIGN")
+        self.assertEqual(_preferred_batch_label("FIVE"), "OPEN_PALM")
+        self.assertEqual(_preferred_batch_label("PINCH_PINKY"), "THREE")
+
+    def test_make_runtime_for_target_uses_label_recommended_mode(self):
+        pinch_runtime = _make_runtime_for_target("PINCH_INDEX", show_help=False, now=10.0)
+        self.assertEqual(pinch_runtime.capture_mode, CaptureMode.MANUAL)
+        self.assertEqual(pinch_runtime.state, RecorderState.PAUSED)
+        self.assertIn("MANUAL mode selected", pinch_runtime.last_result)
+
+        fist_runtime = _make_runtime_for_target("FIST", show_help=True, now=11.0)
+        self.assertEqual(fist_runtime.capture_mode, CaptureMode.AUTO)
+        self.assertEqual(fist_runtime.state, RecorderState.STARTUP_HELP)
+        self.assertGreater(fist_runtime.help_visible_until, 11.0)
+
     def test_validate_gesture_label_rejects_unknown_label(self):
         self.assertEqual(_validate_gesture_label("shaka"), "SHAKA")
         with self.assertRaises(SystemExit):
@@ -343,6 +425,71 @@ class RecordGesturesToolTests(unittest.TestCase):
         self.assertTrue(ready.capture_ready)
         self.assertEqual(ready.gate_reason, "ok")
 
+    def test_build_recorder_guidance_accepts_collection_equivalent_label(self):
+        equivalent = _build_recorder_guidance(
+            target_label="PEACE_SIGN",
+            suite_out=type(
+                "SuiteOut",
+                (),
+                {
+                    "chosen": "TWO",
+                    "stable": "TWO",
+                    "eligible": "TWO",
+                    "source": "rules",
+                },
+            )(),
+            require_label_match=True,
+        )
+        self.assertTrue(equivalent.capture_ready)
+        self.assertEqual(equivalent.gate_reason, "ok")
+        self.assertEqual(equivalent.chosen, "PEACE_SIGN")
+        self.assertEqual(equivalent.stable, "PEACE_SIGN")
+        self.assertEqual(equivalent.eligible, "PEACE_SIGN")
+
+        hold_pending = _build_recorder_guidance(
+            target_label="OPEN_PALM",
+            suite_out=type(
+                "SuiteOut",
+                (),
+                {
+                    "chosen": "FIVE",
+                    "stable": "FIVE",
+                    "eligible": None,
+                    "source": "rules",
+                },
+            )(),
+            require_label_match=True,
+        )
+        self.assertFalse(hold_pending.capture_ready)
+        self.assertEqual(hold_pending.gate_reason, "label_hold_pending:OPEN_PALM")
+        self.assertEqual(hold_pending.chosen, "OPEN_PALM")
+        self.assertEqual(hold_pending.stable, "OPEN_PALM")
+
+        pinky_as_three = _build_recorder_guidance(
+            target_label="THREE",
+            suite_out=type(
+                "SuiteOut",
+                (),
+                {
+                    "chosen": "PINCH_PINKY",
+                    "stable": "PINCH_PINKY",
+                    "eligible": "PINCH_PINKY",
+                    "source": "rules",
+                },
+            )(),
+            require_label_match=True,
+        )
+        self.assertTrue(pinky_as_three.capture_ready)
+        self.assertEqual(pinky_as_three.chosen, "THREE")
+        self.assertEqual(pinky_as_three.stable, "THREE")
+        self.assertEqual(pinky_as_three.eligible, "THREE")
+
+    def test_normalize_recording_label_uses_target_alias_for_display(self):
+        self.assertEqual(_normalize_recording_label("PEACE_SIGN", "TWO"), "PEACE_SIGN")
+        self.assertEqual(_normalize_recording_label("OPEN_PALM", "FIVE"), "OPEN_PALM")
+        self.assertEqual(_normalize_recording_label("THREE", "PINCH_PINKY"), "THREE")
+        self.assertEqual(_normalize_recording_label("THREE", "FOUR"), "FOUR")
+
     def test_progress_text_formats_optional_target(self):
         self.assertEqual(_progress_text(12, None), "12")
         self.assertEqual(_progress_text(12, 100), "12 / 100")
@@ -414,6 +561,43 @@ class RecordGesturesToolTests(unittest.TestCase):
 
         _discard_session(session, artifacts)
 
+        self.assertEqual(session.samples, [])
+        self.assertEqual(session.artifacts, {})
+        self.assertEqual(artifacts.raw_landmarks, [])
+        self.assertEqual(artifacts.snapshot_blobs, {})
+
+    def test_retake_session_resets_runtime_and_returns_fresh_take(self):
+        cfg = RecorderConfig(
+            gesture_label="PINCH_INDEX",
+            user_id="U01",
+            session_id="sess_retake",
+            output_path=Path("out.json"),
+            capture_context={"background": "plain", "lighting": "mixed"},
+            sound_enabled=False,
+        )
+        runtime = RecorderRuntime(
+            state=RecorderState.CONFIRM_SAVE,
+            capture_mode=CaptureMode.MANUAL,
+            accepted_samples=7,
+            rejected_attempts=3,
+            started_at_monotonic=12.0,
+            label_rejections=2,
+        )
+
+        session, artifacts = _retake_session(cfg, runtime, now=42.0)
+
+        self.assertEqual(runtime.state, RecorderState.PAUSED)
+        self.assertEqual(runtime.capture_mode, CaptureMode.MANUAL)
+        self.assertEqual(runtime.accepted_samples, 0)
+        self.assertEqual(runtime.rejected_attempts, 0)
+        self.assertEqual(runtime.label_rejections, 0)
+        self.assertEqual(runtime.started_at_monotonic, 42.0)
+        self.assertEqual(runtime.last_result, "Retake ready. Press SPACE to start again.")
+        self.assertEqual(runtime.last_result_level, "info")
+        self.assertEqual(session.gesture_label, "PINCH_INDEX")
+        self.assertEqual(session.user_id, "U01")
+        self.assertEqual(session.session_id, "sess_retake")
+        self.assertEqual(session.capture_context, {"background": "plain", "lighting": "mixed"})
         self.assertEqual(session.samples, [])
         self.assertEqual(session.artifacts, {})
         self.assertEqual(artifacts.raw_landmarks, [])
@@ -642,6 +826,85 @@ class RecordGesturesToolTests(unittest.TestCase):
         )
 
         self.assertEqual(status, "skipped_missing_context")
+
+    def test_sync_tracker_row_updates_equivalent_unified_rows_on_save(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tracker_path = Path(tmpdir) / "tracker.csv"
+            with tracker_path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv.DictWriter(
+                    handle,
+                    fieldnames=[
+                        "round", "scope", "user_id", "background", "lighting", "gesture_label",
+                        "target_samples", "accepted_samples", "rejected_attempts",
+                        "recommended_mode", "status", "notes", "file_path",
+                    ],
+                )
+                writer.writeheader()
+                for label in ("THREE", "PINCH_PINKY"):
+                    writer.writerow(
+                        {
+                            "round": "phase4_v2",
+                            "scope": "unified",
+                            "user_id": "U01",
+                            "background": "plain",
+                            "lighting": "bright",
+                            "gesture_label": label,
+                            "target_samples": "60",
+                            "accepted_samples": "0",
+                            "rejected_attempts": "0",
+                            "recommended_mode": "AUTO",
+                            "status": "not_started",
+                            "notes": "",
+                            "file_path": "",
+                        }
+                    )
+
+            cfg = RecorderConfig(
+                gesture_label="THREE",
+                user_id="U01",
+                session_id="sess_102",
+                output_path=Path(tmpdir) / "three.json",
+                capture_context={
+                    "round": "phase4_v2",
+                    "scope": "unified",
+                    "background": "plain",
+                    "lighting": "bright",
+                },
+                sound_enabled=False,
+            )
+            session = RecordingSession(
+                gesture_label="THREE",
+                user_id="U01",
+                session_id="sess_102",
+                schema_version="phase3.v2",
+                feature_dimension=92,
+                capture_context=dict(cfg.capture_context),
+                created_at="2026-04-18T20:00:00",
+                samples=[
+                    RecordingSample(0, 1, 1.0, "THREE", "U01", "sess_102", "Right", "phase3.v2", "ok", 1.0, 1.0, 1.0, 1.0, [0.1]),
+                ],
+            )
+            runtime = RecorderRuntime(accepted_samples=1, rejected_attempts=2)
+
+            status = _sync_tracker_row(
+                cfg=cfg,
+                session=session,
+                runtime=runtime,
+                discarded=False,
+                saved=True,
+                tracker_path=tracker_path,
+            )
+
+            self.assertEqual(status, "updated")
+            with tracker_path.open("r", encoding="utf-8", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["status"], "completed")
+            self.assertEqual(rows[1]["status"], "completed")
+            self.assertEqual(rows[0]["file_path"], str(cfg.output_path))
+            self.assertEqual(rows[1]["file_path"], str(cfg.output_path))
+            self.assertIn("session_id=sess_102", rows[0]["notes"])
+            self.assertIn("session_id=sess_102", rows[1]["notes"])
+            self.assertIn("equivalent_to=THREE", rows[1]["notes"])
 
 
 if __name__ == "__main__":

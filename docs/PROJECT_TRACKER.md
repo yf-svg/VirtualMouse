@@ -51,7 +51,7 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 ## GESTURE MAP
 - Auth-only default: `ONE TWO THREE`
 - Ops runtime: `FIST CLOSED_PALM OPEN_PALM SHAKA PEACE_SIGN L BRAVO THUMBS_DOWN POINT_RIGHT POINT_LEFT PINCH_INDEX PINCH_MIDDLE PINCH_RING PINCH_PINKY PINCH_IM PINCH_IMRP`
-- Presentation subset: `POINT_RIGHT POINT_LEFT OPEN_PALM PEACE_SIGN`
+- Presentation subset: `POINT_RIGHT POINT_LEFT OPEN_PALM THUMBS_DOWN`
 - Action map: not implemented yet
 - Notable constraints:
   - `BRAVO` vs `FIST` tuned
@@ -72,7 +72,7 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 - NOTE: `ModeRouter` now owns auth state transitions; runtime loop delegates auth policy
 - NOTE: auth success transitions directly into `ACTIVE_GENERAL`; runtime/debug now surfaces this explicitly as `MODE:GENERAL_READY` so post-auth control readiness is observable instead of implicit
 - NOTE: auth now uses a strict runtime auth-set subset built from configured digits plus mode-local aliases (`PEACE_SIGN -> TWO`, `OPEN_PALM -> FIVE` when `FIVE` is configured) and is implemented as a keypad-style committed buffer; pauses/no-hand frames do not erase entered digits
-- NOTE: auth verification now happens only on explicit `BRAVO` submit against the committed buffer; `FIST` clears the buffer, `THUMBS_DOWN` pops one committed digit, and wrong submit triggers failure/lockout fail-safe behavior
+- NOTE: auth verification now happens only on explicit `BRAVO` submit against the committed buffer; `SHAKA` clears the buffer, `THUMBS_DOWN` pops one committed digit, and wrong submit triggers failure/lockout fail-safe behavior
 - NOTE: sleep->auth wake and relock semantics now live in `ModeRouter`
 - NOTE: presentation mode is now app-gated through `WindowWatch` and router permission sync
 - NOTE: Presentation Mode activation is currently automatic, not gesture-entered: `ACTIVE_GENERAL -> ACTIVE_PRESENTATION` occurs only when foreground presentation context is confidently allowed (or an override forces it), and runtime/debug now surfaces this as `MODE:PRESENTATION_AUTO` or `MODE:PRESENTATION_FORCED`
@@ -103,15 +103,33 @@ Camera -> Preprocess -> MediaPipe -> Quality gate -> Features(`phase3.v2`) -> Fe
 - NOTE: the recorder now defaults to a rules-only target-label confirmation guard: captures only succeed when hand quality passes and the intended label is action-eligible; per-sample payloads also record the recorder's guidance label state for later audit
 - NOTE: the recorder now validates target labels, refuses to overwrite existing output files unless `--overwrite` is supplied, and auto-syncs the matching tracker row on save/discard when `round/scope/background/lighting` context is present
 - NOTE: the recorder now writes a compact raw-landmark sidecar (`.landmarks.npz`) by default using compressed `float16` MediaPipe `x/y/z` coordinates aligned to accepted samples; optional `--save-snapshots` sidecars are stored as cropped low-resolution JPEG hand images to maximize ML/audit value per MB
-- NOTE: presentation mode now resolves `POINT_RIGHT/POINT_LEFT/OPEN_PALM/PEACE_SIGN` through a dedicated policy and uses the same safety + execution seams as General Mode
+- NOTE: presentation mode now resolves `POINT_RIGHT/POINT_LEFT/OPEN_PALM` through a dedicated playback policy and keeps `THUMBS_DOWN` as the separate lifecycle exit path
 - NOTE: presentation mode is now explicitly scoped as playback-only for prepared slide decks; editing/settings actions remain out of scope until a separate policy is approved
-- NOTE: presentation runtime now uses a local one-shot interpreter so held playback gestures do not auto-repeat; `OPEN_PALM` start and `PEACE_SIGN` exit require extra confirmation frames beyond navigation
+- NOTE: presentation runtime now uses a local one-shot interpreter so held playback gestures do not auto-repeat; `OPEN_PALM` start requires extra confirmation frames beyond navigation
 - NOTE: `SHAKA` now exists as a canonical ops/unified label with conservative rule fallback detection, is defined without palm/back orientation assumptions, and is the default scroll-mode toggle gesture
 - NOTE: runtime handedness is now normalized to the user's physical hand from MediaPipe's mirrored/selfie assumption, and the debug overlay exposes raw detector candidates separately from mode-filtered candidates
 - NOTE: `WindowWatch` now performs conservative foreground-app detection for PowerPoint, presentation-like browser tabs, and common PDF viewers; ambiguous context fails safe to no presentation action
-- NOTE: `OPEN_PALM -> PRESENT_START` and `PEACE_SIGN -> PRESENT_EXIT` are now implemented as localized provisional presentation semantics because `FIST` is already overloaded elsewhere and `CLOSED_PALM` is considered too confusable for this repo
+- NOTE: `OPEN_PALM -> PRESENT_START` remains the only slideshow session-control semantic in the playback resolver; `THUMBS_DOWN` owns presentation exit through the lifecycle seam instead of the playback map
+- NOTE: presentation tools now have a dedicated dry-run controller seam in `ACTIVE_PRESENTATION`; `L` toggles laser, `BRAVO` toggles draw mode, and `PEACE_SIGN` now opens a right-justified draw tray for style choices without changing General/Auth/Scroll behavior
+- NOTE: the draw tray stays hidden by default, opens only on intentional `PEACE_SIGN` summon in draw-idle mode, and `PINCH_INDEX` on a tray option changes color, pen type, or size instead of starting a stroke
+- NOTE: selector targeting is now calmer in draw-idle mode: the panel uses a smoothed local pointer path and a brief pinch confirm before changing color/pen, which reduces option-jumping on natural hand jitter
+- NOTE: the presentation draw tray now exposes a fuller modern annotation rail: 6 color swatches, 5 pen identities (`pen` / `marker` / `highlighter` / `brush` / `quill`), and 5 explicit size presets so stroke width is selected independently from pen identity
+- NOTE: the lower-right corner summon dot/beacon has been removed entirely; the draw tray no longer occupies or obscures the bottom-right slide area while idle
+- NOTE: pointer motion now slows locally inside the tray zone to make color/pen picking easier, while free drawing outside the tray keeps the faster path
+- NOTE: the open draw tray now closes automatically after the pointer leaves its bounds for a short grace window, which keeps dismissal lightweight without flicker
+- NOTE: draw release-grace now preserves controller ownership without preserving stroke capture; pen-up motion must no longer append a final tail segment after `PINCH_INDEX` is released
+- NOTE: active draw capture now also stops on the earlier `chosen`-label drop, not only on the later debounced `eligible` release, so post-release finger motion should no longer paint a trailing tail while the gesture gate is still unwinding
+- NOTE: active drawing now uses its own faster adaptive smoothing path with short raw-point history instead of inheriting the calmer draw-idle/tray smoothing path, which should reduce perceived pen lag without making tray targeting twitchy
+- NOTE: presentation tray targeting, laser motion, and active stroke capture now share a common pointer-filter seam built on short recent-point history plus EMA output; each path keeps its own filter instance so tuning remains local while implementation stays consistent
+- NOTE: presentation draw strokes now preserve the color/pen style that was active when each stroke started; later panel changes do not retroactively repaint existing annotations
+- NOTE: draw strokes are now rendered as smoother brush paths instead of obvious straight-segment chains, and pen styling is now modeled as `color + pen type + size` rather than a small fixed set of width-only presets
+- NOTE: presentation draw erase timing is now latency-tolerant: a quick `FIST` release is accepted across short detected holds and natural release lag, while sustained `FIST` hold still clears annotations once at the dedicated clear threshold
+- NOTE: presentation tools now use their own dedicated pointer anchor path (`index_tip` by default) instead of reusing the General Mode cursor anchor, which stabilizes the laser/draw cursor near slide edges and the bottom of the window
+- NOTE: presentation tools now also apply a presentation-local pointer input-range remap, so the slide can reach full bottom height before the fingertip reaches the bottom of the tracking frame; this is meant to stop laser dropout in the lower slide region on real camera setups
+- NOTE: laser rendering now briefly holds the last mapped point across short pointer dropouts so transient recognition loss does not make the dot disappear and reappear in a distant corner
+- NOTE: draw cursor rendering now also briefly holds the last mapped point across short pointer dropouts, which should make edge travel feel less fragile instead of blinking the pen out immediately near screen boundaries
 - NOTE: runtime/operator exit now uses an explicit lifecycle seam; manual `ESC/Q` exit and localized `THUMBS_DOWN` gesture exit both neutralize live/controller ownership before `EXITING`
-- NOTE: `THUMBS_DOWN` now has mode-specific lifecycle behavior: in `ACTIVE_PRESENTATION` it turns Presentation Mode off and latches General Mode until presentation context clears, while in `ACTIVE_GENERAL` it exits the app only from a safe neutral state (not while scroll/clutch/primary/secondary still own control)
+- NOTE: `THUMBS_DOWN` now has mode-specific lifecycle behavior: in `ACTIVE_PRESENTATION` it turns Presentation Mode off, keeps auto-presentation latched until context clears, and also blocks General Mode gesture-exit rearm until the held thumbs-down gesture is released; in `ACTIVE_GENERAL` it exits the app only from a safe neutral state (not while scroll/clutch/primary/secondary still own control)
 - NOTE: centralized operator override policy now layers execution-profile and presentation-routing overrides onto the existing executor/router seams; invalid overrides fail safe to dry-run/auto-routing behavior
 - BUG: validation not auto-run after recording save
 - BUG: FPS target not yet met

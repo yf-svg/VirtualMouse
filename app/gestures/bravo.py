@@ -24,6 +24,7 @@ from app.gestures.features import (
     PINKY_PIP,
     PINKY_DIP,
     PINKY_TIP,
+    distance,
     finger_is_extended,
     finger_is_curled,
     finger_metrics,
@@ -54,6 +55,9 @@ class BravoCfg:
     max_extended: int = 0
     max_tip_cluster_width_ratio: float = 1.10
     max_tip_cluster_height_ratio: float = 0.90
+    pinky_leak_tip_gap_ratio: float = 0.45
+    pinky_leak_tip_to_palm: float = 0.56
+    pinky_leak_curl_ratio: float = 1.08
 
 
 class BravoDetector:
@@ -85,6 +89,23 @@ class BravoDetector:
         return (
             width_ratio <= self.cfg.max_tip_cluster_width_ratio
             and height_ratio <= self.cfg.max_tip_cluster_height_ratio
+        )
+
+    def _pinky_visibly_out(self, lm, *, scale: float, palm: float) -> bool:
+        """
+        Reject thumbs-up / BRAVO when the pinky is clearly leaking away from the
+        curled fingertip cluster. This catches wrist-twisted SHAKA-like poses
+        where the pinky is not straight enough to satisfy the generic
+        finger_is_extended() rule but is still visibly out.
+        """
+        pinky = finger_metrics(lm, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP, use_3d=self.cfg.use_3d, scale=scale)
+        ring_pinky_gap_ratio = distance(lm[RING_TIP], lm[PINKY_TIP], use_3d=self.cfg.use_3d) / palm
+        return (
+            ring_pinky_gap_ratio >= self.cfg.pinky_leak_tip_gap_ratio
+            and (
+                pinky.tip_to_palm >= self.cfg.pinky_leak_tip_to_palm
+                or pinky.curl_ratio >= self.cfg.pinky_leak_curl_ratio
+            )
         )
 
     def detect(self, landmarks: Any) -> bool:
@@ -124,6 +145,8 @@ class BravoDetector:
             return False
 
         if min_thumb_tip_distance_to_fingers(lm, use_3d=self.cfg.use_3d, scale=scale) < self.cfg.thumb_pinch_exclusion:
+            return False
+        if self._pinky_visibly_out(lm, scale=scale, palm=palm):
             return False
 
         fingers = [

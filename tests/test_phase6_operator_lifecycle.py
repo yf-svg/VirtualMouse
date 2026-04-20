@@ -134,6 +134,41 @@ class Phase6OperatorLifecycleTests(unittest.TestCase):
             )
         )
 
+    def test_presentation_gesture_exit_requires_release_before_general_exit_can_rearm(self):
+        controller = OperatorLifecycleController(
+            cfg=OperatorLifecycleConfig(
+                enable_gesture_exit=True,
+                gesture_exit_label="THUMBS_DOWN",
+                gesture_exit_min_hold_frames=2,
+            )
+        )
+
+        presentation_request = controller.request_from_suite_out(
+            suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
+            router_state=AppState.ACTIVE_PRESENTATION,
+        )
+        suppressed_general = controller.request_from_suite_out(
+            suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
+            router_state=AppState.ACTIVE_GENERAL,
+            general_out=_general_out(),
+        )
+        controller.request_from_suite_out(
+            suite_out=_suite_out(down=None, hold_frames=0),
+            router_state=AppState.ACTIVE_GENERAL,
+            general_out=_general_out(),
+        )
+        rearmed_general = controller.request_from_suite_out(
+            suite_out=_suite_out(down="THUMBS_DOWN", hold_frames=2),
+            router_state=AppState.ACTIVE_GENERAL,
+            general_out=_general_out(),
+        )
+
+        self.assertIsNotNone(presentation_request)
+        self.assertEqual(presentation_request.effect, "exit_presentation")
+        self.assertIsNone(suppressed_general)
+        self.assertIsNotNone(rearmed_general)
+        self.assertEqual(rearmed_general.effect, "exit_app")
+
     def test_general_gesture_exit_is_suppressed_while_scroll_or_other_owners_are_active(self):
         controller = OperatorLifecycleController(
             cfg=OperatorLifecycleConfig(
@@ -299,6 +334,8 @@ class Phase6OperatorLifecycleTests(unittest.TestCase):
             kind=PresentationAppKind.UNSUPPORTED,
             process_name="notepad.exe",
             window_title="notes",
+            window_rect=(0, 0, 800, 600),
+            screen_size=(1920, 1080),
             fullscreen_like=False,
             navigation_allowed=False,
             supports_start=False,
@@ -321,6 +358,8 @@ class Phase6OperatorLifecycleTests(unittest.TestCase):
             kind=PresentationAppKind.POWERPOINT,
             process_name="powerpnt.exe",
             window_title="Deck - PowerPoint",
+            window_rect=(0, 0, 1919, 1079),
+            screen_size=(1920, 1080),
             fullscreen_like=True,
             navigation_allowed=True,
             supports_start=True,

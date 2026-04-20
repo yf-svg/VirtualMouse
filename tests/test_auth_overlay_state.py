@@ -170,7 +170,7 @@ class AuthOverlayStateTests(unittest.TestCase):
                 matched_steps=0,
                 total_steps=3,
                 expected_next="ONE",
-                consumed_label="FIST",
+                consumed_label="SHAKA",
                 failed_attempts=0,
                 max_failures=5,
                 retry_after_s=None,
@@ -178,7 +178,7 @@ class AuthOverlayStateTests(unittest.TestCase):
                 buffer_full=False,
             ),
             auth_status="reset_cancel",
-            detected_gesture="FIST",
+            detected_gesture="SHAKA",
         )
         wrong = build_auth_overlay_state(
             cfg=GestureAuthCfg(sequence=("ONE", "TWO", "THREE")),

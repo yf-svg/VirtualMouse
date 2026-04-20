@@ -23,7 +23,7 @@ During locked/auth states, the runtime auth suite now allows only these gestures
 2. `TWO`
 3. `THREE`
 4. `BRAVO`
-5. `FIST`
+5. `SHAKA`
 6. `THUMBS_DOWN`
 7. `PEACE_SIGN`
 
@@ -56,7 +56,7 @@ These aliases are handled only inside the auth runtime path. They do not rename 
 - Validates the committed auth buffer.
 - Auth does not complete until `BRAVO` is shown after `ONE -> TWO -> THREE`.
 
-`FIST`
+`SHAKA`
 - Explicit reset gesture.
 - Clears the committed auth buffer immediately.
 
@@ -80,7 +80,7 @@ Important:
 - Entered digits stay latched even if the hand disappears or changes pose.
 - `BRAVO` is the final approval step and validates the committed buffer.
 - The app does not unlock immediately after `THREE`; it waits for `BRAVO`.
-- `THUMBS_DOWN` edits the stored buffer; `FIST` clears it.
+- `THUMBS_DOWN` edits the stored buffer; `SHAKA` clears it.
 
 ## Runtime Configuration
 
@@ -88,7 +88,7 @@ Current defaults from [app/security/auth.py](c:/Users/win/Desktop/VirtualMouse/a
 
 - `sequence = ("ONE", "TWO", "THREE")`
 - `approve_gestures = ("BRAVO",)`
-- `reset_gestures = ("FIST",)`
+- `reset_gestures = ("SHAKA",)`
 - `back_gestures = ("THUMBS_DOWN",)`
 - `step_timeout_s = 4.0`
 - `max_failures = 5`
@@ -97,7 +97,7 @@ Current defaults from [app/security/auth.py](c:/Users/win/Desktop/VirtualMouse/a
 What this means:
 
 - Auth input is latched; the user may pause between digits without losing committed entries.
-- `FIST` resets the whole buffer.
+- `SHAKA` resets the whole buffer.
 - `THUMBS_DOWN` removes one committed digit instead of failing the attempt.
 - `BRAVO` validates the committed buffer only after the buffer is full.
 - `step_timeout_s` remains in config for compatibility, but it no longer clears committed auth input during normal keypad-style entry.
@@ -133,7 +133,7 @@ If a future auth sequence includes `FIVE`:
 - The router can transition into active operation.
 
 `reset_cancel`
-- `FIST` reset the auth attempt.
+- `SHAKA` reset the auth attempt.
 
 `reset_wrong`
 - The committed buffer failed validation when submitted with `BRAVO`.
@@ -174,7 +174,7 @@ If you want to unlock with the current defaults:
 If you need to correct yourself:
 
 - Show `THUMBS_DOWN` to go back one step
-- Show `FIST` to reset the whole sequence
+- Show `SHAKA` to reset the whole sequence
 
 If you fail too many times:
 
